@@ -1,251 +1,413 @@
-# Slither Arena — Specification
+# Orb Arena — Specification
 
-A single-file, browser-based game. No build step, no dependencies. Open `snake-io.html` in any modern browser.
+A browser-based, P2P-multiplayer arena game where colored circles hunt each other. Single static HTML page, no build step, no backend server.
 
 ---
 
 ## 1. Overview
 
-**Goal:** Grow the longest snake by eating orbs while forcing rival snakes to crash into your body.
+**Goal:** Be the largest (or fastest) orb in the arena. Eat smaller orbs to grow or gain speed; avoid being eaten by bigger ones.
 
-**Genre:** Real-time arcade / `.io`-style massively-single-player-with-bots.
+**Genre:** Real-time arcade / `.io`-style multiplayer.
 
-**Platform:** HTML5 Canvas + vanilla JavaScript. Runs on desktop (mouse + keyboard) and mobile (touch).
-
----
-
-## 2. Core Loop
-
-1. Player enters a name and clicks **PLAY**.
-2. Spawns at a random point inside a circular arena alongside 14 AI bots.
-3. Mouse position relative to the screen center sets the heading; the snake turns smoothly toward it.
-4. Player collects food orbs to grow and rack up score; optionally boosts to outrun or cut off enemies.
-5. Death occurs when the player's **head** touches another snake's **body**, or when the player exits the arena boundary.
-6. On death, the snake's body converts to food, a death screen shows final stats, and the player can replay.
+**Platform:** HTML5 Canvas + vanilla JavaScript + WebRTC (via PeerJS). Runs entirely in the browser; one player hosts the session, others join by ID.
 
 ---
 
-## 3. World
+## 2. Tech Stack
+
+| Layer | Choice | Notes |
+|---|---|---|
+| Markup | HTML5 | Single file `index.html` |
+| Styling | CSS3 | Embedded `<style>` block; flexbox for menu/HUD |
+| Logic | Vanilla JS (ES2020+) | No framework, no bundler |
+| Rendering | Canvas 2D | One main canvas, plus a minimap canvas |
+| Networking | WebRTC DataChannels via [PeerJS](https://peerjs.com/) | CDN-loaded; uses PeerJS's free signaling server for ID brokering |
+| Hosting | Static file | Open `index.html` directly, or serve from any static host (GitHub Pages, file://, etc.) |
+
+**Why PeerJS:** WebRTC requires a signaling step to exchange SDP/ICE between peers. PeerJS provides a free public broker that assigns each peer a short ID and forwards offers/answers — no custom server needed for a hackathon-scale build.
+
+---
+
+## 3. Core Loop
+
+1. Page load → **Main Menu** appears.
+2. Player types a name, picks a color, and chooses **Host** or **Join**.
+   - **Host:** receives a short peer ID; shares it with friends (copy button).
+   - **Join:** types the host's peer ID and connects.
+3. Once the host clicks **Start**, the simulation begins for all connected peers.
+4. Each entity (player or AI bot) is a circle that moves around the arena.
+5. When two circles touch, the larger one consumes the smaller. On consumption, the eater rolls a 50/50: **grow** (radius +) or **speed boost** (permanent speed +).
+6. Death returns you to a death overlay with a **Respawn** button (rejoins the live session with a fresh small orb).
+7. Host leaving ends the session for everyone (joiners see "Host disconnected").
+
+---
+
+## 4. World
 
 | Parameter | Value | Notes |
 |---|---|---|
-| Arena shape | Circle | Centered at world origin `(0, 0)` |
-| `WORLD_R` | 2200 | Arena radius in world units |
-| Wall behavior | Instant death | Crossing the boundary kills the snake |
-| Background | Dark navy `#0a0e1a` with faint grid | Grid step 80px, parallax with camera |
-| Boundary visual | Red-pink glowing ring | `rgba(255,80,120,0.45)` with shadow blur |
+| Arena shape | Square | Axis-aligned |
+| `WORLD_W`, `WORLD_H` | 3000, 3000 px | Top-left origin `(0, 0)`, bottom-right `(3000, 3000)` |
+| Wall behavior (players) | Hard clamp | Player orb's position is clamped to the arena; velocity component into the wall is zeroed (orb stops sliding into the wall) |
+| Wall behavior (AI) | Reflect | AI orbs bounce off walls: position is clamped, then the velocity component normal to that wall is **negated** (elastic bounce, no energy loss) |
+| Background | Dark slate `#0e1320` with faint grid | Grid step 100 px, parallax with camera |
+| Boundary visual | Bright cyan border `#3df0ff` with subtle glow | 4 px stroke |
 
-**Coordinate system:** world-space origin `(0, 0)` is the arena center. The camera follows the player's head with `lerp` smoothing (factor `0.15` per frame). All entities render via `worldToScreen(x, y)`.
+**Coordinate system:** world-space `(0, 0)` is the top-left of the arena. The camera follows the local player's orb with `lerp` smoothing (factor `0.12` per frame). All rendering goes through `worldToScreen(x, y)`.
 
 ---
 
-## 4. Entities
+## 5. Entities
 
-### 4.1 Snake
+All living things in the arena are **Orbs** — there is no separate "food" concept. Small AI orbs serve as both food and threats.
+
+### 5.1 Orb
 
 | Field | Type | Meaning |
 |---|---|---|
-| `name` | string | Display label (≤14 chars for player) |
-| `isPlayer` | bool | Distinguishes the human snake |
-| `segs` | `{x, y}[]` | Body segments, index 0 is the head |
-| `angle` | number | Current heading (radians) |
-| `targetAngle` | number | Desired heading; `angle` lerps toward it |
-| `speed` | number | Current per-frame movement (px) |
-| `boost` | bool | Whether the snake is sprinting |
-| `length` | number | Logical length (float for partial growth) |
-| `color`, `darkColor` | hex | Fill + outline from a paired palette |
-| `score`, `kills` | int | Stats |
-| `dead` | bool | If true, snake is removed from simulation |
-| `partialGrow` | number | Float accumulator for fractional boost drain |
-| `wander`, `mood` | number | Bot AI state |
+| `id` | string | Unique ID (peer ID for players, `bot_<n>` for AI) |
+| `kind` | `"player" \| "ai"` | Drives input source |
+| `name` | string | Display label (≤14 chars; bots use generated names) |
+| `x`, `y` | number | World position (center) |
+| `vx`, `vy` | number | Velocity components (px/frame) |
+| `r` | number | Radius (drives mass & hitbox) |
+| `speed` | number | Max movement speed (px/frame) |
+| `color` | hex | Fill color |
+| `darkColor` | hex | Outline color (derived: HSL lightness − 25%) |
+| `alive` | bool | False after being eaten |
+| `score` | int | Session points (persists across respawns; see §5.6) |
+| `aiState` | object? | Bot-only: `{ wander, target, mood }` |
 
-**Tuning:**
-
-| Parameter | Value |
-|---|---|
-| `BASE_SPEED` | 2.4 px/frame |
-| `BOOST_SPEED` | 4.6 px/frame |
-| `TURN_RATE` | 0.07 rad/frame (max angular delta) |
-| `SEG_SPACING` | 6 px between body samples |
-| `HEAD_R_BASE` | 8 px |
-| Head radius | `HEAD_R_BASE + min(length, 200) * 0.08` |
-| Initial player length | 10 segments |
-| Initial bot length | 10 + random(0..40) |
-| Min length when boosting | 12 (below this, boost is disabled) |
-| `BOOST_DRAIN` | 0.04 length per frame while boosting |
-
-**Movement model:**
-- Each frame, `angle` rotates toward `targetAngle` clamped by `TURN_RATE`.
-- Head moves forward by `speed` along `angle`.
-- New head position is `unshift`ed onto `segs`; tail segments are trimmed so `segs.length === floor(length)`.
-- This produces the smooth, "noodle"-like body familiar to slither.io players (segments are samples, not a fixed grid).
-
-**Boost:**
-- Boosting drains `BOOST_DRAIN` length per frame.
-- Whenever the accumulator crosses an integer, the snake loses one segment and has a 50% chance to drop a food orb at the tail position (colored by the snake's color).
-- This means boost is a real economic tradeoff: spend length to gain speed.
-
-### 4.2 Food
-
-| Field | Type | Meaning |
-|---|---|---|
-| `x, y` | number | World position |
-| `value` | int | Length / score increment (1 for normal, 2 for corpse-drop) |
-| `color` | hex | Render color (random for ambient, snake color for drops) |
-| `pulse` | number | Phase for pulsing animation |
+### 5.2 Tuning
 
 | Parameter | Value |
 |---|---|
-| `FOOD_COUNT` | 600 ambient orbs at all times |
-| Food radius | `3 + value * 0.7 + sin(pulse) * 0.7` |
-| Pickup radius | `head_radius + 4` |
-| Score per food | `value * 10` |
-| Replenishment | When a food is eaten, a new one spawns at a random point in the arena |
+| `START_RADIUS` | 14 px |
+| `MAX_RADIUS` | 120 px |
+| `START_SPEED` | 2.6 px/frame |
+| `MAX_SPEED` | 6.0 px/frame |
+| `GROW_AMOUNT` | +3 px radius per eat |
+| `SPEED_AMOUNT` | +0.25 px/frame per eat |
+| `GROW_VS_BOOST` | 50/50 random roll on eat |
+| `EAT_RATIO` | 1.10 (eater must be ≥10% larger to consume) |
+| `BOT_COUNT` | 20 (host-side only) |
+| `BOT_RESPAWN_FRAMES` | 240 (~4 s @ 60 fps) |
+| `SAFE_SPAWN_RADIUS` | 250 px (no other live orb may be within this distance of a respawn point) |
+| `SAFE_SPAWN_MAX_TRIES` | 30 (attempts to find a clear point before fallback) |
+| `POINTS_PER_EAT` | +10 (awarded to the eater on consumption) |
+| `POINTS_PER_DEATH` | −2 (deducted from the victim; clamped at 0) |
+| `WIN_SCORE_DEFAULT` | 100 (default; host can override before starting — see §7.2) |
+| `WIN_SCORE_MIN` | 20 |
+| `WIN_SCORE_MAX` | 1000 |
+| `WIN_SCORE_STEP` | 10 |
 
-When a snake dies, its body is converted into food orbs of `value = 2`, sampled at every second segment, with jitter `±3 px`.
+### 5.3 Movement model
 
----
+- Player input produces a **desired velocity** vector (see §6).
+- AI input produces velocity via `botThink()` (see §9).
+- Each frame: `x += vx`, `y += vy`. Speed is capped at `orb.speed`.
+- Wall resolution depends on `kind`:
+  - **Player:** position is clamped to `[r, WORLD_W - r]` (and same for Y). Velocity component on the clamped axis is zeroed — the player simply stops against the wall.
+  - **AI:** position is clamped, **and** the velocity component normal to the wall it hit is negated (`vx = -vx` for left/right walls, `vy = -vy` for top/bottom). The bot now travels in the reflected direction. The bot's internal `aiState.wander` heading is also updated to match the new velocity angle so its wander behavior doesn't immediately steer it back into the wall.
 
-## 5. Controls
+### 5.4 Consumption
 
-| Input | Action |
+When orb A's center is within `B.r * EAT_RATIO` of orb B's center **and** A.r ≥ B.r × `EAT_RATIO`:
+- B is marked `alive = false`.
+- `A.score += POINTS_PER_EAT` (default +10).
+- `B.score = max(0, B.score - POINTS_PER_DEATH_ABS)` (default −2; clamped at 0 — score never goes negative).
+- A rolls `Math.random() < 0.5`:
+  - **Grow:** `A.r = min(A.r + GROW_AMOUNT, MAX_RADIUS)`.
+  - **Boost:** `A.speed = min(A.speed + SPEED_AMOUNT, MAX_SPEED)`.
+- The host checks `A.score >= WIN_SCORE` and, if so, ends the session (see §5.6).
+
+If both orbs are within `EAT_RATIO` of *each other's* radii (i.e. nearly equal size), neither eats — they pass through.
+
+### 5.5 Respawn (safe spawn)
+
+Both player respawns (after clicking **Respawn** on the death overlay) and bot respawns (after `BOT_RESPAWN_FRAMES`) use the same **safe-spawn** algorithm, executed on the host:
+
+```
+function findSafeSpawn():
+  for i in 1..SAFE_SPAWN_MAX_TRIES:
+    x = random(START_RADIUS, WORLD_W - START_RADIUS)
+    y = random(START_RADIUS, WORLD_H - START_RADIUS)
+    if no live orb has distance((x,y), orb.pos) < SAFE_SPAWN_RADIUS:
+      return (x, y)
+  // Fallback: no clear point found in 30 tries (arena is crowded).
+  // Pick the candidate that maximizes the distance to the nearest live orb.
+  return argmax_over_candidates(min_distance_to_any_live_orb)
+```
+
+Properties:
+- The new orb starts at `START_RADIUS` and `START_SPEED` — all eat-progress is reset.
+- **Score persists across respawns** (it's a session-long stat, not a per-life stat). Only `r` and `speed` reset.
+- The fallback (max-min distance) guarantees the function always returns a point, even in a fully crowded arena.
+- Algorithm runs on the host. For joiner respawns, the host computes the spawn and includes the new position in the next `state` broadcast.
+
+### 5.6 Session score & victory
+
+The session score is the central competitive metric. Each player and bot has a `score` field, updated by the host:
+
+| Trigger | Effect |
 |---|---|
-| Mouse move | Sets `targetAngle` from screen-center to cursor |
-| Left mouse down / up | Boost on / off |
-| `Space` (down / up) | Boost on / off |
-| Touch (single finger) | Steer + boost while held |
-| Name input + `Enter` | Submit and start |
+| Eat another orb | `eater.score += POINTS_PER_EAT` (default +10) |
+| Be eaten | `victim.score = max(0, victim.score − 2)` |
+| Respawn | Score is **not** reset — it carries forward |
 
-Boost is suppressed when `length <= 12` to prevent the player from boosting themselves to instant death.
+**Victory condition:** the first orb (player **or** bot) whose `score` reaches the session's `WIN_SCORE` wins. The host picks `WIN_SCORE` in the lobby before starting (see §7.2); default 100 (= 10 net eats with no deaths).
 
----
+When the host detects a winner:
+1. Host broadcasts `{ type: "victory", winnerId, winnerName, finalScores: [...] }`.
+2. The simulation **freezes** — no more movement, eating, or input is processed.
+3. All peers transition to the **Victory** UI state (§7): a full-screen overlay showing the winner's name + color, the final ranked scoreboard, and (host only) a **Start New Session** button.
+4. **Start New Session** broadcasts `{ type: "reset" }`. All scores reset to 0, all orbs respawn via `findSafeSpawn()`, and the game returns to the **Playing** state.
 
-## 6. AI (Bots)
-
-Each non-player snake runs `botThink()` once per frame. Decision priority (highest first):
-
-1. **Wall avoidance.** If distance from center > `WORLD_R - 200`, steer toward the origin.
-2. **Threat avoidance.** Look 60 px ahead of the head. Scan all other snakes' body segments (every 3rd segment for performance). If any segment is within an 80 px radius of the look-ahead point, steer 180° away from the nearest threat, weighted by inverse distance.
-3. **Food seek.** Scan all foods within 320 px (`visionR`). Steer toward the nearest one.
-4. **Wander.** If none of the above, jitter `wander` by `±0.05 rad/frame` and steer toward it.
-
-Bots boost randomly (0.5% chance per frame, only if `length > 25`).
-
-**Respawn:** When a bot dies, it is scheduled to respawn 240 frames (~4 s at 60 fps) later under the same name, with a fresh body and random length 10–40.
+Bots winning is allowed (and possible if humans avoid each other). If a bot wins, the overlay shows the bot's generated name and color so it still feels like a real opponent.
 
 ---
 
-## 7. Collisions
+## 6. Controls
 
-Each frame, two collision passes run (in order):
+The local player chooses **one** of two input modes (auto-detected: keyboard wins if any movement key is pressed; mouse otherwise).
 
-### 7.1 Snake-vs-snake (lethal)
-For every alive snake `s`:
-- Take `head = s.segs[0]`, `rh = radius(s)`.
-- For every other alive snake `o`:
-  - Iterate `o.segs` from index 1 (skipping `o`'s head — head-on collisions are not awarded), every 2nd segment.
-  - If `|head - seg| < (rh + ro) * 0.8`, kill `s` and credit `o` with the kill (`o.kills++`, `o.score += 100`).
+### 6.1 Mouse mode (default)
 
-This asymmetry — heads kill bodies, bodies don't kill heads — is what makes the "cut off your opponent" strategy work and matches slither.io semantics.
+- Cursor position sets a **target world point**.
+- Desired velocity = `normalize(target - orb.pos) * orb.speed`.
+- Orb moves toward the cursor until the cursor is inside the orb (then it stops).
 
-### 7.2 Food pickup
-For every alive snake, scan all foods. If `|food - head| < (head_radius + 4)`, the snake absorbs the food: `length += value`, `score += value * 10`, food removed, ambient food count topped up.
+### 6.2 Keyboard mode
 
----
+| Keys | Direction |
+|---|---|
+| `W` or `↑` | Up |
+| `S` or `↓` | Down |
+| `A` or `←` | Left |
+| `D` or `→` | Right |
 
-## 8. Rendering
+- Multiple keys combine for diagonal movement (normalized so diagonals aren't faster).
+- Releasing all keys → velocity ramps to zero over ~10 frames (linear decay).
 
-**Frame structure** (in `render()`):
-1. Clear with `#0a0e1a`.
-2. Draw faded grid (parallax with camera).
-3. Draw arena boundary ring with glow.
-4. Draw all food orbs (skip if off-screen).
-5. Draw all snakes, sorted by length ascending so larger snakes render on top.
-6. Draw minimap (separate canvas).
+### 6.3 Name input
 
-**Snake rendering** uses two stacked `lineTo` strokes over the segment polyline:
-- A wide outline stroke in `darkColor` (`width = 2r + 2`).
-- A narrower inner stroke in `color` (`width = 2r - 2`), with shadow glow when boosting.
-- White dot markers every 6 segments (scale pattern).
-- Head circle on top, with outline.
-- Two eye circles offset `±0.7 rad` from heading; pupils shift slightly forward.
-- Name label drawn above head with stroke-then-fill for readability.
-
-**HUD elements** (HTML, not canvas):
-- Top-left: length, score, kills.
-- Top-right: leaderboard (top 8 by score, player highlighted yellow).
-- Bottom-right: circular minimap (160×160 canvas).
-- Overlay card: pre-game menu and death screen.
-
-**Performance budget:**
-- Target 60 fps.
-- Food rendering culls off-screen orbs by AABB check.
-- Bot threat scans sample every 3rd body segment.
-- Leaderboard DOM updates throttled to every 10th frame.
+- Pre-game: typing name + `Enter` advances. Empty name → auto-generated `Player###`.
 
 ---
 
-## 9. UI States
+## 7. Main Menu / UI States
 
 | State | Trigger | UI |
 |---|---|---|
-| Menu | Page load | Overlay with title, name input, PLAY button, controls hint |
-| Playing | `PLAY` clicked | Overlay hidden, simulation runs |
-| Dead | Player head touches body or exits arena | Overlay reappears with final stats and PLAY AGAIN button |
+| `Menu` | Page load | Title, name input, color picker grid, **Host** / **Join** buttons |
+| `Hosting` | Click **Host** | Show generated peer ID + **Copy** button; **Win score** input (see §7.2); list of connected joiners; **Start Game** button |
+| `Joining` | Click **Join** | Input field for host ID + **Connect** button; status line ("Connecting…", "Waiting for host to start…"); shows the host's chosen win score once received |
+| `Playing` | Host clicks **Start** | Overlay hidden, simulation runs |
+| `Dead` | Local orb eaten | Overlay with stats (current score, eats, time alive) and **Respawn** button — score persists, just costs 2 points |
+| `Victory` | Any orb's score reaches `WIN_SCORE` | Full-screen overlay: winner name + color, final ranked scoreboard, **Start New Session** (host) / "Waiting for host…" (joiners) |
+| `Disconnected` | Host disconnects (joiners) or PeerJS error | Overlay with "Host disconnected" + **Back to Menu** |
 
-The overlay uses `display: flex` ↔ `display: none` toggling via the `.hidden` class. The menu card HTML is rebuilt on death and again on restart so each life starts fresh.
+### 7.2 Host: win score selector
+
+In the **Hosting** state, the host sees a numeric input labelled **Target score** with:
+- Default value: `WIN_SCORE_DEFAULT` (100).
+- Range: `WIN_SCORE_MIN`..`WIN_SCORE_MAX` (20..1000), step `WIN_SCORE_STEP` (10).
+- Quick-pick presets shown as buttons next to the input: **50** (short), **100** (standard), **200** (long), **500** (marathon).
+- Out-of-range input is clamped on blur; non-numeric input falls back to the default.
+
+The host's chosen value becomes the session's `WIN_SCORE`. It is:
+- Re-broadcast to all joiners whenever it changes (via the `lobby` message, see §8.2), so joiners' menus stay in sync.
+- Locked-in at the moment **Start Game** is clicked, and included in the `start` message payload.
+- Carried forward into a new session when the host clicks **Start New Session** on the Victory overlay — the host may also change it before clicking. The new value is included in the `reset` message.
+
+### 7.3 Color picker
+
+A 12-color palette grid. Each swatch is a 40×40 button; selected swatch has a white outline. Colors are vivid and saturated so orbs stay distinguishable on the dark background.
+
+Default palette (HSL `60% / 60%`):
+`#ff5b5b`, `#ff9b3d`, `#ffd83d`, `#9fff3d`, `#3dff8a`, `#3dffd2`, `#3dc9ff`, `#3d7bff`, `#a13dff`, `#ff3df0`, `#ff3d8a`, `#ffffff`.
+
+If two players pick the same color, the second player gets a thin white inner ring on their orb to keep them distinguishable.
 
 ---
 
-## 10. File Layout
+## 8. Networking — P2P Topology
 
-```
-C:\Game\
-├── snake-io.html    # everything: HTML, CSS, JS, assets-as-code
-└── spec.md          # this file
-```
+**Authoritative host model** (star topology):
+- The **host** runs the full simulation: AI, collisions, eat rolls, food respawn.
+- **Joiners** send only their input (cursor position or key state) to the host.
+- The host broadcasts the world snapshot to all joiners ~20× per second.
 
-No external assets, no fonts to load, no images. The entire game is portable as a single file and runs offline.
+### 8.1 Connection lifecycle
+
+1. Host clicks **Host**:
+   - `new Peer()` → PeerJS assigns a short ID (e.g. `gentle-fox-42`).
+   - ID is shown in the menu with a **Copy** button.
+   - Host listens on `peer.on('connection', ...)`.
+2. Joiner clicks **Join** and types the host's ID:
+   - `new Peer()` → gets own ID.
+   - `peer.connect(hostId)` → opens a `DataConnection`.
+   - On `open`, joiner sends `{ type: 'hello', name, color }`.
+3. Host accepts: registers the joiner, sends `{ type: 'welcome', selfId, lobby: [...] }`, broadcasts updated lobby to everyone.
+4. Host clicks **Start**: broadcasts `{ type: 'start' }`; everyone hides the menu and begins rendering.
+
+### 8.2 Message protocol (JSON over DataChannel)
+
+| From → To | `type` | Payload | Frequency |
+|---|---|---|---|
+| Joiner → Host | `hello` | `{ name, color }` | Once on connect |
+| Joiner → Host | `input` | `{ mode: "mouse"\|"keys", mx, my, keys: {w,a,s,d} }` | Every frame (~60/s); coalesced if channel is busy |
+| Joiner → Host | `respawn` | `{}` | On clicking Respawn |
+| Host → Joiner | `welcome` | `{ selfId, lobby }` | Once on accept |
+| Host → All | `lobby` | `{ players: [{id, name, color}], winScore }` | On lobby change OR when host edits win score |
+| Host → All | `start` | `{ winScore }` | On host clicking Start (locks the session win score) |
+| Host → All | `state` | `{ t, orbs: [{id, x, y, r, color, name, alive, score}] }` | 20 Hz |
+| Host → All | `event` | `{ kind: "eat", eaterId, victimId, roll: "grow"\|"boost" }` | On event |
+| Host → All | `victory` | `{ winnerId, winnerName, winnerColor, finalScores: [{id, name, score}] }` | Once when an orb reaches `WIN_SCORE` |
+| Host → All | `reset` | `{ winScore }` | When host clicks **Start New Session** from the Victory overlay (may carry a new `winScore` if host changed it) |
+
+**State message format:** orbs array is sent in full each tick (small N, simple to reason about). Each orb entry: `[id, x|0, y|0, r|0, score, alive ? 1 : 0]` — positions rounded to integers to keep payloads small. With ~28 orbs total (8 players + 20 bots) × ~22 bytes each = ~620 B/tick × 20 Hz ≈ 12 KB/s/joiner. Acceptable.
+
+### 8.3 Client-side prediction (joiners)
+
+To hide ~50–100 ms RTT latency, joiners locally simulate their **own** orb movement from input, then reconcile when the next authoritative `state` arrives:
+- If predicted position is within 30 px of authoritative, ignore (smoothing).
+- Otherwise lerp toward authoritative over 5 frames.
+
+Other players' orbs are pure interpolation between the last two `state` snapshots (no prediction).
+
+### 8.4 Disconnects
+
+- Joiner closes tab → host's `conn.on('close')` removes them from the simulation; their orb is converted to a small ambient orb.
+- Host closes tab → joiners' `conn.on('close')` triggers the **Disconnected** state.
+
+### 8.5 Limits
+
+- Recommended max players: **8**. Beyond that, payload sizes and host CPU become noticeable on consumer hardware.
+- No reconnection logic — if a peer drops, they must re-join.
 
 ---
 
-## 11. Browser Support
+## 9. AI Bots
 
-| Feature used | Min support |
+Bots exist **only on the host**; joiners only see them through `state` messages. Each non-player orb runs `botThink()` once per host-tick.
+
+### 9.1 Decision priority (highest first)
+
+1. **Flee.** Scan all orbs within 400 px. If any is `≥ self.r * EAT_RATIO`, steer directly away from it.
+2. **Chase.** Scan all orbs within 400 px. If any is `≤ self.r / EAT_RATIO`, steer toward the nearest one.
+3. **Wander.** Jitter `aiState.wander` by `±0.08 rad/frame` and steer along it.
+
+Note: bots do **not** actively avoid walls. They bounce off them physically (§5.3), which is enough to keep them inside the arena and produces a more lively, chaotic motion than steering avoidance.
+
+### 9.2 Bot tuning
+
+| Parameter | Value |
+|---|---|
+| Initial radius | random 10–18 px |
+| Initial speed | random 2.2–3.0 px/frame |
+| `visionR` | 400 px |
+| Wander jitter | ±0.08 rad/frame |
+| Respawn delay | 240 frames |
+
+Bots cannot use mouse/keys — their `vx, vy` are set directly by AI.
+
+---
+
+## 10. Collisions
+
+Each host frame, in order:
+
+1. **Movement integration.** All orbs advance by velocity, clamped to arena bounds.
+2. **Pairwise consumption pass.** For each pair `(a, b)` where both are alive:
+   - Compute `d = distance(a, b)`.
+   - If `d < max(a.r, b.r) * EAT_RATIO` and `max(a.r, b.r) ≥ min(a.r, b.r) * EAT_RATIO`:
+     - The larger eats the smaller (see §5.4).
+3. **Bot respawn check.** Any dead bot whose `deathFrame + BOT_RESPAWN_FRAMES ≤ now` respawns via `findSafeSpawn()` (§5.5) with default starting stats.
+4. **Player respawn check.** Any joiner that sent a `respawn` message (and the host's own player on local click) is respawned via `findSafeSpawn()` (§5.5) with default starting stats.
+
+Pair iteration is `O(N²)` — fine for N ≤ ~30. No spatial hash needed at hackathon scale.
+
+---
+
+## 11. Rendering
+
+Every peer renders independently from its local copy of the orb list (authoritative on host, snapshot+interpolation on joiners).
+
+**Frame structure:**
+1. Clear with background color.
+2. Draw faded grid (parallax with camera).
+3. Draw arena boundary rectangle.
+4. Draw all orbs in ascending `r` order so big ones overlap small ones.
+5. Draw minimap (top-down arena overview, local player highlighted yellow).
+6. Update HUD via DOM (every 10th frame to throttle reflow).
+
+**Orb rendering:**
+- Filled circle in `color` with a 2 px outline in `darkColor`.
+- Inner highlight: small white-translucent circle offset toward upper-left (gives a "bubble" feel).
+- Name label drawn above the orb in white with a black stroke, scaling with `r`.
+- Local player's orb has a soft glow (`shadowBlur = 12`).
+
+**HUD elements (HTML overlay, not canvas):**
+- Top-left: your radius, speed, **score** (with a progress bar showing `score / WIN_SCORE` — the session target chosen by the host).
+- Top-right: live leaderboard (top 6 by score, you highlighted yellow). Each row shows colored swatch + name + score.
+- Bottom-right: 160×160 minimap canvas.
+- Bottom-left: connection status indicator (green = connected; yellow = lagging if no `state` in 500 ms; red = disconnected).
+
+---
+
+## 12. File Layout
+
+```
+project/
+├── index.html        # markup + styles + main game script
+├── peerjs.min.js     # vendored OR CDN-loaded: https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js
+└── spec.md           # this file
+```
+
+Everything (CSS, JS, palettes) lives in `index.html`. PeerJS is the only external dependency and can be inlined for fully-offline play (LAN parties without internet still need a signaling server, though — see §14).
+
+---
+
+## 13. Browser Support
+
+| Feature | Min support |
 |---|---|
 | Canvas 2D | All modern browsers |
 | `requestAnimationFrame` | All modern browsers |
-| `backdrop-filter` | Chrome 76+, Safari 9+, Firefox 103+ (graceful fall-back to opaque panels) |
-| CSS gradient text (`background-clip: text`) | All modern browsers |
-| Pointer + touch events | All modern browsers |
+| WebRTC DataChannel | Chrome 56+, Firefox 52+, Safari 11+, Edge 79+ |
+| `navigator.clipboard.writeText` (for Copy ID button) | All modern browsers (HTTPS or `file://`) |
 
-Tested target: latest Chrome / Edge / Firefox on Windows 11. No transpilation or polyfills.
-
----
-
-## 12. Known Limitations / Non-Goals
-
-- **No networking.** All "other snakes" are local AI bots; there is no multiplayer.
-- **No persistence.** Scores, names, and stats reset on page reload.
-- **No sound.** Silent by design — no audio assets.
-- **No mobile-optimized UI chrome.** Touch works for steer/boost but the menu layout assumes a reasonable viewport.
-- **Fixed bot count.** 14 bots regardless of arena population; no difficulty scaling.
-- **Simple AI.** Bots do not coordinate, do not target the player specifically, and do not attempt cut-off maneuvers.
+Tested target: latest Chrome / Edge / Firefox on Windows 11. Mobile is not a target for v1 (touch controls aren't designed).
 
 ---
 
-## 13. Tuning Cheat Sheet
+## 14. Non-Goals / Known Limitations
 
-If the game feels off, these are the first knobs to turn (all at the top of the `<script>` block):
+- **No dedicated server.** Host is authoritative; if host quits, the game ends.
+- **No NAT traversal guarantee.** WebRTC works through most home NATs via PeerJS's STUN, but symmetric NATs may fail. TURN relays are out of scope.
+- **No persistence.** No accounts, no saved scores, no cosmetics.
+- **No anti-cheat.** Joiners trust the host; the host trusts joiner input. Acceptable for friend-group play.
+- **No sound.** Silent by design.
+- **No spectator mode.** Dead players must respawn or leave.
+- **Fixed bot count.** 20 bots regardless of human players.
+- **No private rooms beyond ID secrecy.** Anyone with your host ID can join; treat the ID like a session password.
+
+---
+
+## 15. Tuning Cheat Sheet
 
 | Symptom | Knob |
 |---|---|
-| Snake feels sluggish | `BASE_SPEED` ↑ |
-| Boost feels weak | `BOOST_SPEED` ↑ or `BOOST_DRAIN` ↓ |
-| Snake turns too sharply | `TURN_RATE` ↓ |
-| Body looks chunky | `SEG_SPACING` ↓ (more samples) |
-| Arena feels cramped | `WORLD_R` ↑ |
-| Too few/many bots | `BOT_COUNT` |
-| Food too sparse | `FOOD_COUNT` ↑ |
-| Bots too aggressive at chasing food | reduce `visionR` in `botThink` |
-| Bots crash into walls | widen wall threshold (currently `WORLD_R - 200`) |
+| Game feels too slow | `START_SPEED` ↑ |
+| Growing too fast | `GROW_AMOUNT` ↓ |
+| Sessions end too quickly / slowly | host picks a higher / lower **Target score** in the lobby (default `WIN_SCORE_DEFAULT`) |
+| Death penalty feels too harsh / too soft | `POINTS_PER_DEATH_ABS` (default 2) |
+| Speed boosts feel pointless | `SPEED_AMOUNT` ↑ or `MAX_SPEED` ↑ |
+| Arena feels empty | `BOT_COUNT` ↑ |
+| Bots too easy / too hard | `visionR` or AI flee/chase thresholds |
+| Bots bounce off walls too predictably | add small random kick to reflected velocity (`±0.2 rad` perturbation on bounce) |
+| Joiners jittery | `state` broadcast Hz ↑ (cost: bandwidth) |
+| Joiners eat bandwidth | `state` broadcast Hz ↓ + tighter rounding |
+| Cannot connect across networks | enable TURN server in PeerJS config |

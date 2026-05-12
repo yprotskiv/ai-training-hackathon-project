@@ -1,0 +1,1060 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Orb Arena</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0e1320; color: #d8e1ff; font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; }
+  canvas { display: block; }
+  #game { position: fixed; inset: 0; }
+  #minimap { position: fixed; bottom: 16px; right: 16px; width: 160px; height: 160px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; }
+
+  .hud { position: fixed; padding: 12px 16px; background: rgba(0,0,0,0.55); border-radius: 8px; backdrop-filter: blur(6px); border: 1px solid rgba(255,255,255,0.08); font-size: 14px; pointer-events: none; }
+  #hud-stats { top: 16px; left: 16px; min-width: 220px; }
+  #hud-leaderboard { top: 16px; right: 16px; min-width: 220px; }
+  #hud-conn { bottom: 16px; left: 16px; display: flex; align-items: center; gap: 8px; }
+  .hud .stat-row { display: flex; justify-content: space-between; gap: 16px; margin: 4px 0; }
+  .hud .stat-label { color: #8a99c2; }
+  .hud .stat-value { color: #fff; font-weight: 600; }
+  .progress { width: 100%; height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden; margin-top: 6px; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, #3dff8a, #ffd83d); transition: width 0.2s; }
+  .lb-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  .lb-row.me { color: #ffd83d; font-weight: bold; }
+  .lb-swatch { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.2); }
+  .lb-name { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .lb-score { font-weight: 600; }
+  .conn-dot { width: 10px; height: 10px; border-radius: 50%; background: #3dff8a; }
+  .conn-dot.yellow { background: #ffd83d; }
+  .conn-dot.red { background: #ff5b5b; }
+
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(8,12,24,0.78); backdrop-filter: blur(8px); z-index: 100; padding: 20px; }
+  .overlay.hidden { display: none; }
+  .card { background: linear-gradient(180deg, rgba(35,42,72,0.95), rgba(20,26,48,0.95)); border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 28px 32px; min-width: 360px; max-width: 520px; width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,0.6); max-height: 90vh; overflow-y: auto; }
+  .card h1 { font-size: 32px; background: linear-gradient(90deg, #3dc9ff, #a13dff); -webkit-background-clip: text; background-clip: text; color: transparent; margin-bottom: 6px; }
+  .card .subtitle { color: #8a99c2; margin-bottom: 16px; font-size: 14px; }
+  .card label { display: block; font-size: 11px; color: #8a99c2; text-transform: uppercase; letter-spacing: 1px; margin: 14px 0 6px; }
+  .card input[type="text"], .card input[type="number"] { width: 100%; padding: 10px 12px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: #fff; font-size: 16px; font-family: inherit; }
+  .card input:focus { outline: none; border-color: #3dc9ff; }
+  .palette { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+  .palette button { width: 100%; aspect-ratio: 1; border-radius: 50%; border: 2px solid transparent; cursor: pointer; transition: transform 0.1s; padding: 0; }
+  .palette button:hover { transform: scale(1.1); }
+  .palette button.selected { border-color: #fff; box-shadow: 0 0 12px rgba(255,255,255,0.4); }
+  .btn { display: inline-block; padding: 11px 22px; border: none; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; transition: transform 0.1s, box-shadow 0.1s, background 0.1s; font-family: inherit; }
+  .btn-primary { background: linear-gradient(90deg, #3dc9ff, #a13dff); color: #fff; }
+  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(61,201,255,0.3); }
+  .btn-secondary { background: rgba(255,255,255,0.1); color: #fff; }
+  .btn-secondary:hover { background: rgba(255,255,255,0.18); }
+  .btn-row { display: flex; gap: 8px; margin-top: 18px; }
+  .btn-row .btn { flex: 1; }
+  .peer-id-box { padding: 12px; background: rgba(0,0,0,0.4); border: 1px dashed rgba(255,255,255,0.2); border-radius: 8px; font-family: "Courier New", monospace; font-size: 15px; color: #3dff8a; word-break: break-all; display: flex; align-items: center; gap: 12px; }
+  .peer-id-box .id-text { flex: 1; }
+  .peer-id-box .btn { padding: 6px 12px; font-size: 13px; }
+  .preset-row { display: flex; gap: 6px; margin-top: 8px; }
+  .preset-row .btn { flex: 1; padding: 7px 8px; font-size: 12px; background: rgba(255,255,255,0.06); color: #d8e1ff; }
+  .preset-row .btn.selected { background: rgba(61,201,255,0.25); color: #3dc9ff; }
+  .lobby-list { max-height: 180px; overflow-y: auto; background: rgba(0,0,0,0.2); border-radius: 8px; padding: 6px 10px; }
+  .lobby-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 14px; }
+  .status { color: #8a99c2; font-size: 14px; text-align: center; margin: 10px 0; min-height: 20px; }
+  .winner-banner { font-size: 30px; font-weight: 700; text-align: center; margin: 12px 0; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+  .final-scores { background: rgba(0,0,0,0.3); border-radius: 8px; padding: 8px 12px; margin: 12px 0; max-height: 240px; overflow-y: auto; }
+  .final-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; gap: 12px; font-size: 14px; }
+  .final-row.winner { color: #ffd83d; font-weight: 700; }
+  .hint { font-size: 12px; color: #6e7ba0; text-align: center; margin-top: 14px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<canvas id="minimap" width="160" height="160" style="display:none"></canvas>
+
+<div id="hud-stats" class="hud" style="display:none">
+  <div class="stat-row"><span class="stat-label">Score</span><span class="stat-value" id="stat-score">0</span></div>
+  <div class="progress"><div class="progress-fill" id="score-progress" style="width:0%"></div></div>
+  <div class="stat-row"><span class="stat-label">Radius</span><span class="stat-value" id="stat-radius">14</span></div>
+  <div class="stat-row"><span class="stat-label">Speed</span><span class="stat-value" id="stat-speed">2.60</span></div>
+</div>
+
+<div id="hud-leaderboard" class="hud" style="display:none">
+  <div style="font-size: 11px; text-transform: uppercase; color: #8a99c2; margin-bottom: 6px; letter-spacing: 1px;">Leaderboard</div>
+  <div id="lb-list"></div>
+</div>
+
+<div id="hud-conn" class="hud" style="display:none">
+  <div class="conn-dot" id="conn-dot"></div>
+  <span id="conn-text">Connected</span>
+</div>
+
+<div id="overlay-menu" class="overlay">
+  <div class="card">
+    <h1>Orb Arena</h1>
+    <div class="subtitle">Hunt smaller orbs. Avoid bigger ones. First to the target score wins.</div>
+    <label>Your name</label>
+    <input type="text" id="input-name" maxlength="14" placeholder="Anonymous">
+    <label>Pick a color</label>
+    <div class="palette" id="palette"></div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="btn-host">Host</button>
+      <button class="btn btn-secondary" id="btn-join">Join</button>
+    </div>
+    <div class="hint">Mouse to move, or WASD / Arrows. Hosts share their session ID with friends.</div>
+  </div>
+</div>
+
+<div id="overlay-hosting" class="overlay hidden">
+  <div class="card">
+    <h1>Hosting</h1>
+    <div class="subtitle">Share this ID with friends so they can join.</div>
+    <label>Your session ID</label>
+    <div class="peer-id-box">
+      <div class="id-text" id="host-peer-id">connecting…</div>
+      <button class="btn btn-secondary" id="btn-copy-id">Copy</button>
+    </div>
+    <label>Target score</label>
+    <input type="number" id="input-win-score" min="20" max="1000" step="10" value="100">
+    <div class="preset-row">
+      <button class="btn" data-ws="50">Short (50)</button>
+      <button class="btn" data-ws="100">Standard (100)</button>
+      <button class="btn" data-ws="200">Long (200)</button>
+      <button class="btn" data-ws="500">Marathon (500)</button>
+    </div>
+    <label>Players in lobby</label>
+    <div class="lobby-list" id="lobby-list"></div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="btn-start">Start Game</button>
+      <button class="btn btn-secondary" id="btn-host-back">Back</button>
+    </div>
+  </div>
+</div>
+
+<div id="overlay-joining" class="overlay hidden">
+  <div class="card">
+    <h1>Join Session</h1>
+    <div class="subtitle">Enter the host's session ID.</div>
+    <label>Host ID</label>
+    <input type="text" id="input-host-id" placeholder="paste host id here">
+    <div class="status" id="join-status"></div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="btn-connect">Connect</button>
+      <button class="btn btn-secondary" id="btn-join-back">Back</button>
+    </div>
+  </div>
+</div>
+
+<div id="overlay-dead" class="overlay hidden">
+  <div class="card">
+    <h1>You got eaten</h1>
+    <div class="subtitle">You lost 2 points. Your score carries over.</div>
+    <div class="stat-row" style="font-size: 16px; margin: 12px 0;"><span class="stat-label">Score</span><span class="stat-value" id="dead-score">0</span></div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="btn-respawn">Respawn</button>
+    </div>
+  </div>
+</div>
+
+<div id="overlay-victory" class="overlay hidden">
+  <div class="card">
+    <h1>Session Over</h1>
+    <div class="winner-banner" id="winner-banner">…</div>
+    <div class="final-scores" id="final-scores"></div>
+    <div class="btn-row" id="victory-actions"></div>
+  </div>
+</div>
+
+<div id="overlay-disconnected" class="overlay hidden">
+  <div class="card">
+    <h1>Disconnected</h1>
+    <div class="subtitle" id="disconnect-reason">Host disconnected.</div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="btn-disconnect-menu">Back to Menu</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+'use strict';
+
+// ============================================================
+// Constants (see spec.md §5.2)
+// ============================================================
+const WORLD_W = 3000, WORLD_H = 3000;
+const START_RADIUS = 14, MAX_RADIUS = 120;
+const START_SPEED = 2.6, MAX_SPEED = 6.0;
+const GROW_AMOUNT = 3, SPEED_AMOUNT = 0.25;
+const EAT_RATIO = 1.10;
+const BOT_COUNT = 20;
+const BOT_RESPAWN_FRAMES = 240;
+const SAFE_SPAWN_RADIUS = 250;
+const SAFE_SPAWN_MAX_TRIES = 30;
+const POINTS_PER_EAT = 10;
+const POINTS_PER_DEATH = 2;
+const WIN_SCORE_DEFAULT = 100;
+const WIN_SCORE_MIN = 20, WIN_SCORE_MAX = 1000, WIN_SCORE_STEP = 10;
+const STATE_HZ = 20;
+const STATE_TICK_INTERVAL = Math.max(1, Math.round(60 / STATE_HZ));
+
+const PALETTE = ['#ff5b5b','#ff9b3d','#ffd83d','#9fff3d','#3dff8a','#3dffd2','#3dc9ff','#3d7bff','#a13dff','#ff3df0','#ff3d8a','#ffffff'];
+const BOT_NAMES = ['Bubbles','Zorp','Quasar','Kibble','Nudge','Wobble','Pixel','Jinx','Blip','Glomp','Snorp','Boop','Zazz','Mochi','Nimbus','Pico','Vex','Yump','Krunk','Mango','Tofu','Squish','Dot','Fizz'];
+
+// ============================================================
+// State
+// ============================================================
+let role = null;          // 'host' | 'join' | null
+let mode = 'menu';        // menu | hosting | joining | playing | dead | victory | disconnected
+let peer = null;
+let conns = new Map();    // host-side: peerId -> DataConnection
+let hostConn = null;      // joiner-side: connection to host
+let selfPeerId = null;
+let myName = '';
+let myColor = PALETTE[0];
+let winScore = WIN_SCORE_DEFAULT;
+let orbs = [];
+let lobby = [];           // host-side authoritative joiner list
+let myOrbId = null;
+let camera = { x: WORLD_W/2, y: WORLD_H/2 };
+let mouseScreen = { x: window.innerWidth/2, y: window.innerHeight/2 };
+let keys = { w:false, a:false, s:false, d:false };
+let inputMode = 'mouse';
+let frame = 0;
+let lastStateAt = 0;
+let lastMyAlive = true;
+let botRespawnTimers = new Map();
+let joinerInputs = new Map();
+let pendingRespawns = new Set();
+let winnerInfo = null;
+let isDeadOverlayActive = false;
+const DEBUG_NET = true; // flip off when stable
+
+// ============================================================
+// Canvas
+// ============================================================
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const mini = document.getElementById('minimap');
+const mctx = mini.getContext('2d');
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ============================================================
+// Helpers
+// ============================================================
+function rand(a, b) { return a + Math.random() * (b - a); }
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function darken(hex) {
+  const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+  const f = 0.55;
+  return '#' + [r,g,b].map(c => Math.round(c*f).toString(16).padStart(2,'0')).join('');
+}
+function worldToScreen(x, y) {
+  return { x: (x - camera.x) + canvas.width/2, y: (y - camera.y) + canvas.height/2 };
+}
+function screenToWorld(sx, sy) {
+  return { x: sx - canvas.width/2 + camera.x, y: sy - canvas.height/2 + camera.y };
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
+}
+
+// ============================================================
+// Orb factories & safe spawn
+// ============================================================
+function makePlayerOrb(id, name, color, pos) {
+  return {
+    id, kind: 'player', name: (name || 'Anon').slice(0,14),
+    color: color || PALETTE[0], darkColor: darken(color || PALETTE[0]),
+    x: pos.x, y: pos.y, vx: 0, vy: 0,
+    r: START_RADIUS, speed: START_SPEED,
+    alive: true, score: 0
+  };
+}
+function makeBotOrb(id, pos) {
+  const color = PALETTE[Math.floor(Math.random()*PALETTE.length)];
+  const name = BOT_NAMES[Math.floor(Math.random()*BOT_NAMES.length)];
+  return {
+    id, kind: 'ai', name, color, darkColor: darken(color),
+    x: pos.x, y: pos.y, vx: 0, vy: 0,
+    r: rand(10, 18), speed: rand(2.2, 3.0),
+    alive: true, score: 0,
+    aiState: { wander: Math.random()*Math.PI*2 }
+  };
+}
+function findSafeSpawn() {
+  let bestX = WORLD_W/2, bestY = WORLD_H/2, bestMin = -1;
+  for (let i = 0; i < SAFE_SPAWN_MAX_TRIES; i++) {
+    const x = rand(START_RADIUS+10, WORLD_W - START_RADIUS - 10);
+    const y = rand(START_RADIUS+10, WORLD_H - START_RADIUS - 10);
+    let minD = Infinity;
+    for (const o of orbs) {
+      if (!o.alive) continue;
+      const d = Math.hypot(o.x - x, o.y - y);
+      if (d < minD) minD = d;
+    }
+    if (minD >= SAFE_SPAWN_RADIUS) return { x, y };
+    if (minD > bestMin) { bestMin = minD; bestX = x; bestY = y; }
+  }
+  return { x: bestX, y: bestY };
+}
+
+// ============================================================
+// Input
+// ============================================================
+window.addEventListener('mousemove', e => {
+  mouseScreen.x = e.clientX;
+  mouseScreen.y = e.clientY;
+});
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  let used = false;
+  if (k === 'w' || k === 'arrowup')    { keys.w = true; used = true; }
+  if (k === 's' || k === 'arrowdown')  { keys.s = true; used = true; }
+  if (k === 'a' || k === 'arrowleft')  { keys.a = true; used = true; }
+  if (k === 'd' || k === 'arrowright') { keys.d = true; used = true; }
+  if (used && (mode === 'playing')) {
+    inputMode = 'keys';
+    e.preventDefault();
+  }
+});
+window.addEventListener('keyup', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'w' || k === 'arrowup')    keys.w = false;
+  if (k === 's' || k === 'arrowdown')  keys.s = false;
+  if (k === 'a' || k === 'arrowleft')  keys.a = false;
+  if (k === 'd' || k === 'arrowright') keys.d = false;
+});
+canvas.addEventListener('mousedown', () => { if (mode === 'playing') inputMode = 'mouse'; });
+
+function getLocalInput() {
+  const w = screenToWorld(mouseScreen.x, mouseScreen.y);
+  return {
+    mode: inputMode,
+    mx: w.x, my: w.y,
+    keys: { w: keys.w, a: keys.a, s: keys.s, d: keys.d }
+  };
+}
+
+function applyInputToOrb(orb, input) {
+  if (!orb || !orb.alive) return;
+  if (input.mode === 'keys') {
+    const dx = (input.keys.d ? 1 : 0) - (input.keys.a ? 1 : 0);
+    const dy = (input.keys.s ? 1 : 0) - (input.keys.w ? 1 : 0);
+    if (dx === 0 && dy === 0) {
+      orb.vx *= 0.85; orb.vy *= 0.85;
+      if (Math.abs(orb.vx) < 0.05) orb.vx = 0;
+      if (Math.abs(orb.vy) < 0.05) orb.vy = 0;
+    } else {
+      const len = Math.hypot(dx, dy);
+      orb.vx = dx / len * orb.speed;
+      orb.vy = dy / len * orb.speed;
+    }
+  } else {
+    const dx = input.mx - orb.x;
+    const dy = input.my - orb.y;
+    const d = Math.hypot(dx, dy);
+    if (d < orb.r) {
+      orb.vx = 0; orb.vy = 0;
+    } else {
+      orb.vx = dx / d * orb.speed;
+      orb.vy = dy / d * orb.speed;
+    }
+  }
+}
+
+// ============================================================
+// AI
+// ============================================================
+function botThink(bot) {
+  let flee = null, fleeD = Infinity;
+  let chase = null, chaseD = Infinity;
+  for (const o of orbs) {
+    if (o === bot || !o.alive) continue;
+    const d = Math.hypot(o.x - bot.x, o.y - bot.y);
+    if (d > 400) continue;
+    if (o.r >= bot.r * EAT_RATIO && d < fleeD) { fleeD = d; flee = o; }
+    else if (o.r <= bot.r / EAT_RATIO && d < chaseD) { chaseD = d; chase = o; }
+  }
+  let angle;
+  if (flee) {
+    angle = Math.atan2(bot.y - flee.y, bot.x - flee.x);
+    bot.aiState.wander = angle;
+  } else if (chase) {
+    angle = Math.atan2(chase.y - bot.y, chase.x - bot.x);
+    bot.aiState.wander = angle;
+  } else {
+    bot.aiState.wander += rand(-0.08, 0.08);
+    angle = bot.aiState.wander;
+  }
+  bot.vx = Math.cos(angle) * bot.speed;
+  bot.vy = Math.sin(angle) * bot.speed;
+}
+
+// ============================================================
+// Movement / wall resolution (spec §5.3)
+// ============================================================
+function moveOrb(orb) {
+  orb.x += orb.vx;
+  orb.y += orb.vy;
+  if (orb.kind === 'player') {
+    if (orb.x < orb.r)           { orb.x = orb.r; orb.vx = 0; }
+    if (orb.x > WORLD_W - orb.r) { orb.x = WORLD_W - orb.r; orb.vx = 0; }
+    if (orb.y < orb.r)           { orb.y = orb.r; orb.vy = 0; }
+    if (orb.y > WORLD_H - orb.r) { orb.y = WORLD_H - orb.r; orb.vy = 0; }
+  } else {
+    let bounced = false;
+    if (orb.x < orb.r)           { orb.x = orb.r; orb.vx = -orb.vx; bounced = true; }
+    if (orb.x > WORLD_W - orb.r) { orb.x = WORLD_W - orb.r; orb.vx = -orb.vx; bounced = true; }
+    if (orb.y < orb.r)           { orb.y = orb.r; orb.vy = -orb.vy; bounced = true; }
+    if (orb.y > WORLD_H - orb.r) { orb.y = WORLD_H - orb.r; orb.vy = -orb.vy; bounced = true; }
+    if (bounced) orb.aiState.wander = Math.atan2(orb.vy, orb.vx);
+  }
+}
+
+// ============================================================
+// Consumption (spec §5.4)
+// ============================================================
+function handleConsumption() {
+  for (let i = 0; i < orbs.length; i++) {
+    const a = orbs[i];
+    if (!a.alive) continue;
+    for (let j = i + 1; j < orbs.length; j++) {
+      const b = orbs[j];
+      if (!b.alive) continue;
+      const big = a.r >= b.r ? a : b;
+      const small = big === a ? b : a;
+      if (big.r < small.r * EAT_RATIO) continue;
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (d < big.r * EAT_RATIO) {
+        small.alive = false;
+        big.score += POINTS_PER_EAT;
+        small.score = Math.max(0, small.score - POINTS_PER_DEATH);
+        const roll = Math.random() < 0.5 ? 'grow' : 'boost';
+        if (roll === 'grow') big.r = Math.min(big.r + GROW_AMOUNT, MAX_RADIUS);
+        else big.speed = Math.min(big.speed + SPEED_AMOUNT, MAX_SPEED);
+        broadcast({ type: 'event', kind: 'eat', eaterId: big.id, victimId: small.id, roll });
+        if (small.kind === 'ai') botRespawnTimers.set(small.id, BOT_RESPAWN_FRAMES);
+      }
+    }
+  }
+}
+function handleBotRespawn() {
+  for (const [id, t] of botRespawnTimers) {
+    if (t <= 1) {
+      const bot = orbs.find(o => o.id === id);
+      if (bot) {
+        const pos = findSafeSpawn();
+        bot.x = pos.x; bot.y = pos.y;
+        bot.r = rand(10, 18); bot.speed = rand(2.2, 3.0);
+        bot.vx = 0; bot.vy = 0; bot.alive = true;
+        bot.aiState.wander = Math.random()*Math.PI*2;
+      }
+      botRespawnTimers.delete(id);
+    } else {
+      botRespawnTimers.set(id, t - 1);
+    }
+  }
+}
+function handlePlayerRespawns() {
+  for (const pid of pendingRespawns) {
+    const orb = orbs.find(o => o.id === pid);
+    if (orb && !orb.alive) {
+      const pos = findSafeSpawn();
+      orb.x = pos.x; orb.y = pos.y;
+      orb.r = START_RADIUS; orb.speed = START_SPEED;
+      orb.vx = 0; orb.vy = 0; orb.alive = true;
+    }
+  }
+  pendingRespawns.clear();
+}
+function checkVictory() {
+  for (const o of orbs) {
+    if (o.score >= winScore) {
+      winnerInfo = {
+        winnerId: o.id, winnerName: o.name, winnerColor: o.color,
+        finalScores: [...orbs].map(x => ({ id:x.id, name:x.name, color:x.color, score:x.score, kind:x.kind }))
+                              .sort((a,b)=>b.score-a.score)
+      };
+      broadcast({ type: 'victory', ...winnerInfo });
+      mode = 'victory';
+      showVictoryOverlay();
+      return;
+    }
+  }
+}
+
+// ============================================================
+// Networking
+// ============================================================
+function broadcast(msg) {
+  if (role !== 'host') return;
+  for (const conn of conns.values()) {
+    try { conn.send(msg); } catch (e) { if (DEBUG_NET) console.warn('broadcast send fail', e); }
+  }
+}
+function sendToHost(msg) {
+  if (role !== 'join' || !hostConn) return;
+  try { hostConn.send(msg); } catch (e) { if (DEBUG_NET) console.warn('sendToHost fail', e); }
+}
+function broadcastState() {
+  const snap = {
+    type: 'state',
+    t: Date.now(),
+    orbs: orbs.map(o => ({
+      id: o.id, kind: o.kind, name: o.name, color: o.color,
+      x: Math.round(o.x), y: Math.round(o.y), r: Math.round(o.r*10)/10,
+      score: o.score, alive: o.alive
+    }))
+  };
+  broadcast(snap);
+}
+function broadcastLobby() {
+  broadcast({ type: 'lobby', players: lobby, winScore });
+  renderLobbyList();
+}
+
+function setupHostConn(conn) {
+  conns.set(conn.peer, conn);
+  if (DEBUG_NET) console.log('[host] incoming connection', conn.peer);
+  conn.on('open', () => { if (DEBUG_NET) console.log('[host] conn open', conn.peer); });
+  conn.on('data', data => onHostReceive(conn.peer, data));
+  conn.on('close', () => { if (DEBUG_NET) console.log('[host] conn close', conn.peer); onJoinerLeave(conn.peer); });
+  conn.on('error', e => { if (DEBUG_NET) console.warn('[host] conn error', conn.peer, e); onJoinerLeave(conn.peer); });
+}
+function onHostReceive(peerId, msg) {
+  if (!msg || !msg.type) return;
+  if (DEBUG_NET && msg.type !== 'input') console.log('[host] recv', msg.type, 'from', peerId);
+  if (msg.type === 'hello') {
+    lobby = lobby.filter(p => p.id !== peerId);
+    lobby.push({ id: peerId, name: (msg.name || 'Anon').slice(0,14), color: msg.color || PALETTE[0] });
+    const conn = conns.get(peerId);
+    if (conn && conn.open) conn.send({ type: 'welcome', selfId: peerId, lobby, winScore });
+    broadcastLobby();
+    if (mode === 'playing') {
+      // Late join: spawn an orb and send start
+      const existing = orbs.find(o => o.id === peerId);
+      if (!existing) orbs.push(makePlayerOrb(peerId, msg.name, msg.color, findSafeSpawn()));
+      if (conn && conn.open) conn.send({ type: 'start', winScore });
+    }
+  } else if (msg.type === 'input') {
+    joinerInputs.set(peerId, msg);
+  } else if (msg.type === 'respawn') {
+    pendingRespawns.add(peerId);
+  }
+}
+function onJoinerLeave(peerId) {
+  lobby = lobby.filter(p => p.id !== peerId);
+  conns.delete(peerId);
+  joinerInputs.delete(peerId);
+  orbs = orbs.filter(o => o.id !== peerId);
+  broadcastLobby();
+}
+
+function onJoinerReceive(msg) {
+  if (!msg || !msg.type) return;
+  if (DEBUG_NET && msg.type !== 'state') console.log('[joiner] recv', msg.type, msg);
+  if (msg.type === 'welcome') {
+    myOrbId = msg.selfId;
+    lobby = msg.lobby || [];
+    winScore = msg.winScore || WIN_SCORE_DEFAULT;
+    setJoinStatus(`Connected (${lobby.length} player${lobby.length===1?'':'s'} in lobby). Target: ${winScore}. Waiting for host…`);
+  } else if (msg.type === 'lobby') {
+    lobby = msg.players || [];
+    winScore = msg.winScore || winScore;
+    if (mode === 'joining') setJoinStatus(`Connected (${lobby.length} player${lobby.length===1?'':'s'} in lobby). Target: ${winScore}. Waiting for host…`);
+  } else if (msg.type === 'start') {
+    winScore = msg.winScore || winScore;
+    startPlayingClient();
+  } else if (msg.type === 'state') {
+    applySnapshot(msg);
+    lastStateAt = performance.now();
+  } else if (msg.type === 'victory') {
+    winnerInfo = msg;
+    mode = 'victory';
+    showVictoryOverlay();
+  } else if (msg.type === 'reset') {
+    winScore = msg.winScore || winScore;
+    winnerInfo = null;
+    hideOverlay('victory');
+    hideDeadOverlay();
+    lastMyAlive = true;
+    mode = 'playing';
+  }
+}
+
+function applySnapshot(snap) {
+  const byId = new Map(orbs.map(o => [o.id, o]));
+  const seen = new Set();
+  for (const s of snap.orbs) {
+    let o = byId.get(s.id);
+    if (!o) {
+      o = { id: s.id, kind: s.kind, name: s.name, color: s.color, darkColor: darken(s.color),
+            x: s.x, y: s.y, vx: 0, vy: 0, r: s.r, score: s.score, alive: s.alive };
+      orbs.push(o);
+    } else {
+      o.name = s.name; o.color = s.color; o.darkColor = darken(s.color);
+      o.x = s.x; o.y = s.y; o.r = s.r; o.score = s.score; o.alive = s.alive;
+    }
+    seen.add(s.id);
+  }
+  orbs = orbs.filter(o => seen.has(o.id));
+}
+
+// ============================================================
+// Game session
+// ============================================================
+function startHostingGame() {
+  orbs = [];
+  orbs.push(makePlayerOrb(selfPeerId, myName, myColor, findSafeSpawn()));
+  myOrbId = selfPeerId;
+  for (const p of lobby) orbs.push(makePlayerOrb(p.id, p.name, p.color, findSafeSpawn()));
+  for (let i = 0; i < BOT_COUNT; i++) orbs.push(makeBotOrb('bot_' + i, findSafeSpawn()));
+  botRespawnTimers.clear();
+  pendingRespawns.clear();
+  winnerInfo = null;
+  lastMyAlive = true;
+  if (DEBUG_NET) console.log('[host] start game,', orbs.length, 'orbs,', conns.size, 'joiners, winScore', winScore);
+  broadcast({ type: 'start', winScore });
+  mode = 'playing';
+  hideAllOverlays();
+  showHUD(true);
+}
+function startPlayingClient() {
+  mode = 'playing';
+  hideAllOverlays();
+  showHUD(true);
+}
+function resetSession() {
+  if (role !== 'host') return;
+  winnerInfo = null;
+  for (const o of orbs) {
+    o.score = 0;
+    o.alive = true;
+    const pos = findSafeSpawn();
+    o.x = pos.x; o.y = pos.y;
+    o.vx = 0; o.vy = 0;
+    if (o.kind === 'player') { o.r = START_RADIUS; o.speed = START_SPEED; }
+    else { o.r = rand(10,18); o.speed = rand(2.2,3.0); o.aiState.wander = Math.random()*Math.PI*2; }
+  }
+  botRespawnTimers.clear();
+  pendingRespawns.clear();
+  broadcast({ type: 'reset', winScore });
+  mode = 'playing';
+  lastMyAlive = true;
+  hideOverlay('victory');
+  hideDeadOverlay();
+}
+
+// ============================================================
+// UI helpers
+// ============================================================
+function showOverlay(name) {
+  hideAllOverlays();
+  if (name) document.getElementById('overlay-' + name).classList.remove('hidden');
+}
+function hideOverlay(name) {
+  document.getElementById('overlay-' + name).classList.add('hidden');
+}
+function hideAllOverlays() {
+  for (const id of ['menu','hosting','joining','dead','victory','disconnected']) {
+    document.getElementById('overlay-' + id).classList.add('hidden');
+  }
+}
+function showHUD(show) {
+  document.getElementById('hud-stats').style.display = show ? '' : 'none';
+  document.getElementById('hud-leaderboard').style.display = show ? '' : 'none';
+  document.getElementById('hud-conn').style.display = show ? '' : 'none';
+  document.getElementById('minimap').style.display = show ? '' : 'none';
+}
+function renderLobbyList() {
+  if (role !== 'host') return;
+  const list = document.getElementById('lobby-list');
+  const all = [{ id: selfPeerId, name: myName, color: myColor, isHost: true }, ...lobby];
+  if (all.length === 0) { list.innerHTML = '<div class="lobby-row" style="color:#8a99c2">No players yet.</div>'; return; }
+  list.innerHTML = all.map(p => `
+    <div class="lobby-row">
+      <div class="lb-swatch" style="background:${p.color}"></div>
+      <div class="lb-name">${escapeHtml(p.name)}${p.isHost ? ' <span style="color:#8a99c2">(host, you)</span>' : ''}</div>
+    </div>`).join('');
+}
+function setJoinStatus(s) { document.getElementById('join-status').textContent = s; }
+
+function showVictoryOverlay() {
+  showOverlay('victory');
+  const wb = document.getElementById('winner-banner');
+  wb.textContent = `${winnerInfo.winnerName} wins!`;
+  wb.style.color = winnerInfo.winnerColor;
+  const list = winnerInfo.finalScores.map((p, i) => `
+    <div class="final-row${i===0?' winner':''}">
+      <div class="lb-swatch" style="background:${p.color}"></div>
+      <div class="lb-name">${escapeHtml(p.name)}${p.kind==='ai' ? ' <span style="color:#8a99c2;font-size:11px">(bot)</span>' : ''}</div>
+      <div class="lb-score">${p.score}</div>
+    </div>`).join('');
+  document.getElementById('final-scores').innerHTML = list;
+  const actions = document.getElementById('victory-actions');
+  if (role === 'host') {
+    actions.innerHTML = `<button class="btn btn-primary" id="btn-reset" style="flex:1">Start New Session</button>`;
+    document.getElementById('btn-reset').addEventListener('click', resetSession);
+  } else {
+    actions.innerHTML = `<div class="status" style="flex:1">Waiting for host to start a new session…</div>`;
+  }
+}
+
+function showDeadOverlay() {
+  if (mode === 'victory' || mode === 'disconnected') return;
+  if (isDeadOverlayActive) return;
+  isDeadOverlayActive = true;
+  document.getElementById('overlay-dead').classList.remove('hidden');
+  const me = orbs.find(o => o.id === myOrbId);
+  document.getElementById('dead-score').textContent = me ? me.score : 0;
+}
+function hideDeadOverlay() {
+  isDeadOverlayActive = false;
+  document.getElementById('overlay-dead').classList.add('hidden');
+}
+
+// ============================================================
+// Main loop
+// ============================================================
+function tick() {
+  frame++;
+
+  // Host: simulate every frame the session is live (don't pause when locally dead).
+  if (role === 'host' && mode === 'playing') {
+    const meHost = orbs.find(o => o.id === selfPeerId);
+    if (meHost && meHost.alive) applyInputToOrb(meHost, getLocalInput());
+    for (const orb of orbs) {
+      if (orb.kind === 'player' && orb.id !== selfPeerId) {
+        const inp = joinerInputs.get(orb.id);
+        if (inp && orb.alive) applyInputToOrb(orb, inp);
+        else if (orb.alive) { orb.vx *= 0.85; orb.vy *= 0.85; }
+      }
+      if (orb.kind === 'ai' && orb.alive) botThink(orb);
+    }
+    for (const orb of orbs) if (orb.alive) moveOrb(orb);
+    handleConsumption();
+    handleBotRespawn();
+    handlePlayerRespawns();
+    checkVictory();
+    if (frame % STATE_TICK_INTERVAL === 0) broadcastState();
+  }
+
+  // Joiner: send input every frame (host ignores if our orb is dead).
+  if (role === 'join' && mode === 'playing') {
+    const input = getLocalInput();
+    input.type = 'input';
+    sendToHost(input);
+  }
+
+  // Local death transition (alive -> dead). Mode does NOT change; sim keeps running.
+  const me = orbs.find(o => o.id === myOrbId);
+  if (mode === 'playing' && me && lastMyAlive && !me.alive) {
+    showDeadOverlay();
+  }
+  // Auto-hide dead overlay if our orb is alive again (e.g., after respawn).
+  if (isDeadOverlayActive && me && me.alive) {
+    hideDeadOverlay();
+  }
+  lastMyAlive = me ? me.alive : true;
+
+  // Camera follow
+  if (me) {
+    camera.x += (me.x - camera.x) * 0.12;
+    camera.y += (me.y - camera.y) * 0.12;
+  } else {
+    camera.x += (WORLD_W/2 - camera.x) * 0.05;
+    camera.y += (WORLD_H/2 - camera.y) * 0.05;
+  }
+
+  render();
+  if (frame % 6 === 0) updateHUD();
+  requestAnimationFrame(tick);
+}
+
+// ============================================================
+// Rendering
+// ============================================================
+function render() {
+  ctx.fillStyle = '#0e1320';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  if (mode === 'menu' || mode === 'hosting' || mode === 'joining') return;
+
+  // Grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+  ctx.lineWidth = 1;
+  const grid = 100;
+  const minWorldX = camera.x - canvas.width/2;
+  const maxWorldX = camera.x + canvas.width/2;
+  const minWorldY = camera.y - canvas.height/2;
+  const maxWorldY = camera.y + canvas.height/2;
+  ctx.beginPath();
+  for (let x = Math.floor(minWorldX/grid)*grid; x <= maxWorldX; x += grid) {
+    const sx = (x - camera.x) + canvas.width/2;
+    ctx.moveTo(sx, 0); ctx.lineTo(sx, canvas.height);
+  }
+  for (let y = Math.floor(minWorldY/grid)*grid; y <= maxWorldY; y += grid) {
+    const sy = (y - camera.y) + canvas.height/2;
+    ctx.moveTo(0, sy); ctx.lineTo(canvas.width, sy);
+  }
+  ctx.stroke();
+
+  // Boundary
+  const tl = worldToScreen(0, 0);
+  const br = worldToScreen(WORLD_W, WORLD_H);
+  ctx.strokeStyle = '#3df0ff';
+  ctx.lineWidth = 4;
+  ctx.shadowBlur = 14; ctx.shadowColor = '#3df0ff';
+  ctx.strokeRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+  ctx.shadowBlur = 0;
+
+  // Orbs (smallest first → big ones overlap)
+  const sorted = [...orbs].filter(o => o.alive).sort((a,b) => a.r - b.r);
+  for (const o of sorted) {
+    const s = worldToScreen(o.x, o.y);
+    if (s.x + o.r < -20 || s.x - o.r > canvas.width + 20) continue;
+    if (s.y + o.r < -20 || s.y - o.r > canvas.height + 20) continue;
+    if (o.id === myOrbId) { ctx.shadowBlur = 16; ctx.shadowColor = o.color; }
+    ctx.fillStyle = o.color;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, o.r, 0, Math.PI*2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = o.darkColor;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // bubble highlight
+    ctx.fillStyle = 'rgba(255,255,255,0.28)';
+    ctx.beginPath();
+    ctx.arc(s.x - o.r*0.32, s.y - o.r*0.32, Math.max(2, o.r*0.28), 0, Math.PI*2);
+    ctx.fill();
+    // name
+    if (o.r > 8) {
+      const fs = Math.max(11, Math.min(20, o.r * 0.7));
+      ctx.font = `${fs}px -apple-system, system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+      ctx.fillStyle = '#fff';
+      ctx.strokeText(o.name, s.x, s.y - o.r - 6);
+      ctx.fillText(o.name, s.x, s.y - o.r - 6);
+    }
+  }
+
+  renderMinimap();
+}
+
+function renderMinimap() {
+  mctx.clearRect(0, 0, mini.width, mini.height);
+  mctx.fillStyle = 'rgba(20,28,48,0.85)';
+  mctx.fillRect(0, 0, mini.width, mini.height);
+  mctx.strokeStyle = '#3df0ff';
+  mctx.lineWidth = 1;
+  mctx.strokeRect(0, 0, mini.width, mini.height);
+  for (const o of orbs) {
+    if (!o.alive) continue;
+    const x = (o.x / WORLD_W) * mini.width;
+    const y = (o.y / WORLD_H) * mini.height;
+    mctx.fillStyle = o.color;
+    mctx.beginPath();
+    mctx.arc(x, y, o.id === myOrbId ? 3 : 1.8, 0, Math.PI*2);
+    mctx.fill();
+    if (o.id === myOrbId) {
+      mctx.strokeStyle = '#ffd83d';
+      mctx.lineWidth = 1;
+      mctx.beginPath();
+      mctx.arc(x, y, 5, 0, Math.PI*2);
+      mctx.stroke();
+    }
+  }
+}
+
+function updateHUD() {
+  if (mode !== 'playing' && mode !== 'dead' && mode !== 'victory') return;
+  const me = orbs.find(o => o.id === myOrbId);
+  if (me) {
+    document.getElementById('stat-score').textContent = me.score;
+    document.getElementById('score-progress').style.width = Math.min(100, (me.score / winScore) * 100) + '%';
+    document.getElementById('stat-radius').textContent = me.r.toFixed(1);
+    document.getElementById('stat-speed').textContent = me.speed.toFixed(2);
+  }
+  const top = [...orbs].sort((a,b) => b.score - a.score).slice(0, 6);
+  document.getElementById('lb-list').innerHTML = top.map(o => `
+    <div class="lb-row${o.id===myOrbId?' me':''}">
+      <div class="lb-swatch" style="background:${o.color}"></div>
+      <div class="lb-name">${escapeHtml(o.name)}</div>
+      <div class="lb-score">${o.score}</div>
+    </div>`).join('');
+  const dot = document.getElementById('conn-dot');
+  const txt = document.getElementById('conn-text');
+  if (role === 'join') {
+    const age = performance.now() - lastStateAt;
+    if (age > 1500) { dot.className = 'conn-dot red'; txt.textContent = 'Disconnected'; }
+    else if (age > 500) { dot.className = 'conn-dot yellow'; txt.textContent = 'Lagging'; }
+    else { dot.className = 'conn-dot'; txt.textContent = 'Connected'; }
+  } else if (role === 'host') {
+    dot.className = 'conn-dot';
+    txt.textContent = `Hosting · ${conns.size} joiner${conns.size===1?'':'s'}`;
+  }
+}
+
+// ============================================================
+// Menu wiring
+// ============================================================
+const paletteEl = document.getElementById('palette');
+PALETTE.forEach((c, i) => {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.style.background = c;
+  b.dataset.color = c;
+  if (i === 0) b.classList.add('selected');
+  b.addEventListener('click', () => {
+    paletteEl.querySelectorAll('button').forEach(x => x.classList.remove('selected'));
+    b.classList.add('selected');
+    myColor = c;
+  });
+  paletteEl.appendChild(b);
+});
+
+document.getElementById('btn-host').addEventListener('click', () => {
+  myName = (document.getElementById('input-name').value.trim() || ('Host_' + Math.floor(Math.random()*899+100))).slice(0, 14);
+  startHost();
+});
+document.getElementById('btn-join').addEventListener('click', () => {
+  myName = (document.getElementById('input-name').value.trim() || ('Player_' + Math.floor(Math.random()*899+100))).slice(0, 14);
+  showOverlay('joining');
+  mode = 'joining';
+  setJoinStatus('');
+});
+document.getElementById('btn-host-back').addEventListener('click', () => {
+  if (peer) { peer.destroy(); peer = null; }
+  conns.clear(); lobby = []; role = null;
+  showOverlay('menu'); mode = 'menu';
+});
+document.getElementById('btn-join-back').addEventListener('click', () => {
+  if (peer) { peer.destroy(); peer = null; }
+  hostConn = null; role = null;
+  showOverlay('menu'); mode = 'menu';
+});
+document.getElementById('btn-copy-id').addEventListener('click', async () => {
+  if (!selfPeerId) return;
+  try {
+    await navigator.clipboard.writeText(selfPeerId);
+    const b = document.getElementById('btn-copy-id');
+    b.textContent = 'Copied!';
+    setTimeout(() => b.textContent = 'Copy', 1500);
+  } catch (e) {}
+});
+document.getElementById('btn-connect').addEventListener('click', () => {
+  const hostId = document.getElementById('input-host-id').value.trim();
+  if (!hostId) { setJoinStatus('Please enter a host ID.'); return; }
+  startJoin(hostId);
+});
+document.getElementById('btn-start').addEventListener('click', () => {
+  startHostingGame();
+});
+document.getElementById('btn-respawn').addEventListener('click', () => {
+  if (role === 'host') pendingRespawns.add(selfPeerId);
+  else sendToHost({ type: 'respawn' });
+  hideDeadOverlay();
+  lastMyAlive = false; // re-arm death detection
+});
+document.getElementById('btn-disconnect-menu').addEventListener('click', () => {
+  if (peer) { peer.destroy(); peer = null; }
+  conns.clear(); hostConn = null; lobby = []; orbs = [];
+  role = null; mode = 'menu';
+  hideDeadOverlay();
+  showOverlay('menu'); showHUD(false);
+});
+
+const wsInput = document.getElementById('input-win-score');
+wsInput.addEventListener('change', () => {
+  let v = parseInt(wsInput.value, 10);
+  if (isNaN(v)) v = WIN_SCORE_DEFAULT;
+  v = Math.round(v / WIN_SCORE_STEP) * WIN_SCORE_STEP;
+  v = clamp(v, WIN_SCORE_MIN, WIN_SCORE_MAX);
+  wsInput.value = v;
+  winScore = v;
+  broadcastLobby();
+  updatePresetSelected();
+});
+document.querySelectorAll('.preset-row .btn').forEach(b => {
+  b.addEventListener('click', () => {
+    const v = parseInt(b.dataset.ws, 10);
+    wsInput.value = v;
+    winScore = v;
+    broadcastLobby();
+    updatePresetSelected();
+  });
+});
+function updatePresetSelected() {
+  document.querySelectorAll('.preset-row .btn').forEach(b => {
+    b.classList.toggle('selected', parseInt(b.dataset.ws, 10) === winScore);
+  });
+}
+
+// ============================================================
+// PeerJS bring-up
+// ============================================================
+function startHost() {
+  role = 'host';
+  showOverlay('hosting');
+  mode = 'hosting';
+  document.getElementById('host-peer-id').textContent = 'connecting…';
+  peer = new Peer();
+  peer.on('open', id => {
+    selfPeerId = id;
+    document.getElementById('host-peer-id').textContent = id;
+    renderLobbyList();
+    updatePresetSelected();
+  });
+  peer.on('connection', conn => setupHostConn(conn));
+  peer.on('error', err => {
+    console.error('peer error', err);
+    document.getElementById('host-peer-id').textContent = 'Error: ' + (err.message || err.type || 'unknown');
+  });
+}
+
+function startJoin(hostId) {
+  role = 'join';
+  setJoinStatus('Connecting to broker…');
+  peer = new Peer();
+  peer.on('open', id => {
+    selfPeerId = id;
+    setJoinStatus('Connecting to host…');
+    const conn = peer.connect(hostId, { reliable: true });
+    hostConn = conn;
+    conn.on('open', () => {
+      conn.send({ type: 'hello', name: myName, color: myColor });
+      setJoinStatus('Connected. Waiting for host to start…');
+    });
+    conn.on('data', onJoinerReceive);
+    conn.on('close', () => {
+      if (mode === 'playing' || mode === 'dead' || mode === 'victory') {
+        mode = 'disconnected';
+        showOverlay('disconnected');
+        showHUD(false);
+        document.getElementById('disconnect-reason').textContent = 'Host disconnected.';
+      } else {
+        setJoinStatus('Host disconnected.');
+      }
+    });
+    conn.on('error', e => setJoinStatus('Connection error: ' + (e.message || e.type || 'unknown')));
+  });
+  peer.on('error', err => {
+    setJoinStatus('Peer error: ' + (err.message || err.type || 'unknown'));
+  });
+}
+
+// ============================================================
+// Boot
+// ============================================================
+showOverlay('menu');
+showHUD(false);
+updatePresetSelected();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

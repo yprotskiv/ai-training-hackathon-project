@@ -11,7 +11,7 @@
   #game { position: fixed; inset: 0; }
   #minimap { position: fixed; bottom: 16px; right: 16px; width: 160px; height: 160px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; }
 
-  .hud { position: fixed; padding: 12px 16px; background: rgba(0,0,0,0.55); border-radius: 8px; backdrop-filter: blur(6px); border: 1px solid rgba(255,255,255,0.08); font-size: 14px; pointer-events: none; }
+  .hud { position: fixed; padding: 12px 16px; background: rgba(8,12,24,0.78); border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); font-size: 14px; pointer-events: none; }
   #hud-stats { top: 16px; left: 16px; min-width: 220px; }
   #hud-leaderboard { top: 16px; right: 16px; min-width: 220px; }
   #hud-conn { bottom: 16px; left: 16px; display: flex; align-items: center; gap: 8px; }
@@ -29,8 +29,13 @@
   .conn-dot.yellow { background: #ffd83d; }
   .conn-dot.red { background: #ff5b5b; }
 
-  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(8,12,24,0.78); backdrop-filter: blur(8px); z-index: 100; padding: 20px; }
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(8,12,24,0.94); z-index: 100; padding: 20px; }
   .overlay.hidden { display: none; }
+  /* Dead overlay shows during active gameplay — must NOT use backdrop-filter
+     (GPU-heavy) and must NOT capture clicks across the whole screen so the
+     game keeps showing behind it and the host's sim isn't slowed. */
+  #overlay-dead { background: transparent; backdrop-filter: none; pointer-events: none; }
+  #overlay-dead .card { pointer-events: auto; box-shadow: 0 12px 40px rgba(0,0,0,0.85), 0 0 0 1px rgba(255,255,255,0.08); }
   .card { background: linear-gradient(180deg, rgba(35,42,72,0.95), rgba(20,26,48,0.95)); border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 28px 32px; min-width: 360px; max-width: 520px; width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,0.6); max-height: 90vh; overflow-y: auto; }
   .card h1 { font-size: 32px; background: linear-gradient(90deg, #3dc9ff, #a13dff); -webkit-background-clip: text; background-clip: text; color: transparent; margin-bottom: 6px; }
   .card .subtitle { color: #8a99c2; margin-bottom: 16px; font-size: 14px; }
@@ -64,6 +69,9 @@
   .hint { font-size: 12px; color: #6e7ba0; text-align: center; margin-top: 14px; line-height: 1.5; }
   #visibility-banner { position: fixed; top: 0; left: 0; right: 0; padding: 10px 16px; background: #ff5b5b; color: #fff; text-align: center; font-size: 14px; font-weight: 600; z-index: 200; box-shadow: 0 4px 12px rgba(0,0,0,0.4); display: none; }
   #visibility-banner.show { display: block; }
+  #notifications { position: fixed; bottom: 64px; left: 16px; display: flex; flex-direction: column; gap: 6px; pointer-events: none; z-index: 50; max-width: 320px; }
+  .notice { padding: 8px 14px; background: rgba(8,12,24,0.9); border-left: 3px solid #3dff8a; border-radius: 4px; color: #fff; font-size: 14px; opacity: 0; transform: translateX(-20px); transition: opacity 0.3s ease, transform 0.3s ease; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+  .notice.show { opacity: 1; transform: translateX(0); }
 </style>
 </head>
 <body>
@@ -87,6 +95,8 @@
   <div class="conn-dot" id="conn-dot"></div>
   <span id="conn-text">Connected</span>
 </div>
+
+<div id="notifications"></div>
 
 <div id="overlay-menu" class="overlay">
   <div class="card">
@@ -113,8 +123,9 @@
       <div class="id-text" id="host-peer-id">connecting…</div>
       <button class="btn btn-secondary" id="btn-copy-id">Copy</button>
     </div>
+    <button class="btn btn-primary" id="btn-host-retry" style="margin-top: 8px; display: none;">Retry Connection</button>
     <label>Target score</label>
-    <input type="number" id="input-win-score" min="20" max="1000" step="10" value="100">
+    <input type="number" id="input-win-score" min="20" max="1000" step="10" value="500">
     <div class="preset-row">
       <button class="btn" data-ws="50">Short (50)</button>
       <button class="btn" data-ws="100">Standard (100)</button>
@@ -181,20 +192,27 @@
 // ============================================================
 // Constants (see spec.md §5.2)
 // ============================================================
-const WORLD_W = 3000, WORLD_H = 3000;
-const START_RADIUS = 14, MAX_RADIUS = 120;
+const WORLD_W = 2100, WORLD_H = 2100;
+const START_RADIUS = 16, MAX_RADIUS = 120;
 const START_SPEED = 2.6, MAX_SPEED = 6.0;
 const GROW_AMOUNT = 3, SPEED_AMOUNT = 0.25;
 const EAT_RATIO = 1.10;
-const BOT_COUNT = 20;
+const BOT_COUNT = 30;
 const BOT_RESPAWN_FRAMES = 240;
+const AI_VISION_R = 350;        // bot alert radius (px) — within this distance, bots react to other orbs
+const AI_MAX_TURN = 0.06;       // max angular delta (rad/frame) — smooths chase/flee direction changes
+const AI_BOUNCE_FRAMES = 30;    // frames after a wall bounce during which the bot ignores chase/flee
+                                // and follows the rebound direction (prevents wall-sticking when chasing)
+const AI_SPAWN_RADIUS = 12;  // baseline (smallest) size for bots
+const AI_SPAWN_RADIUS_JITTER = 2;  // ± random variation around baseline so bots can consume each other
+const AI_SPAWN_SPEED = 2.4;  // all bots spawn at this fixed speed (slower than player START_SPEED)
 const SAFE_SPAWN_RADIUS = 250;
 const SAFE_SPAWN_MAX_TRIES = 30;
-const POINTS_PER_EAT = 10;
+const POINTS_PER_EAT = 5;
 const POINTS_PER_DEATH = 2;
-const WIN_SCORE_DEFAULT = 100;
+const WIN_SCORE_DEFAULT = 500;
 const WIN_SCORE_MIN = 20, WIN_SCORE_MAX = 1000, WIN_SCORE_STEP = 10;
-const STATE_HZ = 20;
+const STATE_HZ = 30;
 const STATE_TICK_INTERVAL = Math.max(1, Math.round(60 / STATE_HZ));
 
 const PALETTE = ['#ff5b5b','#ff9b3d','#ffd83d','#9fff3d','#3dff8a','#3dffd2','#3dc9ff','#3d7bff','#a13dff','#ff3df0','#ff3d8a','#ffffff'];
@@ -265,6 +283,68 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
 }
 
+function pushNotification(text, color) {
+  const container = document.getElementById('notifications');
+  if (!container) return;
+  const note = document.createElement('div');
+  note.className = 'notice';
+  if (color) note.style.borderLeftColor = color;
+  note.textContent = text;
+  container.appendChild(note);
+  requestAnimationFrame(() => note.classList.add('show'));
+  setTimeout(() => {
+    note.classList.remove('show');
+    setTimeout(() => note.remove(), 350);
+  }, 4000);
+}
+
+// ============================================================
+// Particles (consume + spawn FX)
+// ============================================================
+const particles = [];
+const MAX_PARTICLES = 500;
+function spawnParticles(x, y, color, count, baseSpeed, baseSize, decay) {
+  for (let i = 0; i < count; i++) {
+    if (particles.length >= MAX_PARTICLES) particles.shift();
+    const angle = (i / count) * Math.PI * 2 + Math.random() * 0.6;
+    const sp = baseSpeed * (0.6 + Math.random() * 0.7);
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * sp,
+      vy: Math.sin(angle) * sp,
+      life: 1.0,
+      decay,
+      r: baseSize * (0.7 + Math.random() * 0.6),
+      color
+    });
+  }
+}
+function spawnConsumeFx(x, y, color) { spawnParticles(x, y, color, 14, 3.5, 3, 0.04); }
+function spawnSpawnFx(x, y, color)    { spawnParticles(x, y, color, 26, 5.0, 5, 0.022); }
+
+function updateParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy;
+    p.vx *= 0.93; p.vy *= 0.93;
+    p.life -= p.decay;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+function renderParticles() {
+  for (const p of particles) {
+    const s = worldToScreen(p.x, p.y);
+    if (s.x < -20 || s.x > canvas.width + 20 || s.y < -20 || s.y > canvas.height + 20) continue;
+    const a = Math.max(0, p.life);
+    ctx.globalAlpha = a;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, p.r * a, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
 // ============================================================
 // Orb factories & safe spawn
 // ============================================================
@@ -274,18 +354,26 @@ function makePlayerOrb(id, name, color, pos) {
     color: color || PALETTE[0], darkColor: darken(color || PALETTE[0]),
     x: pos.x, y: pos.y, vx: 0, vy: 0,
     r: START_RADIUS, speed: START_SPEED,
-    alive: true, score: 0
+    alive: true, score: 0,
+    pulseOffset: Math.random() * Math.PI * 2,
+    headingAngle: 0,
+    moving: false
   };
 }
 function makeBotOrb(id, pos) {
   const color = PALETTE[Math.floor(Math.random()*PALETTE.length)];
   const name = BOT_NAMES[Math.floor(Math.random()*BOT_NAMES.length)];
+  const wander = Math.random()*Math.PI*2;
   return {
     id, kind: 'ai', name, color, darkColor: darken(color),
     x: pos.x, y: pos.y, vx: 0, vy: 0,
-    r: rand(10, 18), speed: rand(2.2, 3.0),
+    r: AI_SPAWN_RADIUS + rand(-AI_SPAWN_RADIUS_JITTER, AI_SPAWN_RADIUS_JITTER),
+    speed: AI_SPAWN_SPEED,
     alive: true, score: 0,
-    aiState: { wander: Math.random()*Math.PI*2 }
+    pulseOffset: Math.random() * Math.PI * 2,
+    headingAngle: wander,
+    moving: false,
+    aiState: { wander, bounceTimer: 0 }
   };
 }
 function findSafeSpawn() {
@@ -373,28 +461,48 @@ function applyInputToOrb(orb, input) {
 // AI
 // ============================================================
 function botThink(bot) {
+  // Just bounced off a wall — follow rebound direction for a few frames so
+  // chase/flee can't pin us back into the wall.
+  if (bot.aiState.bounceTimer > 0) {
+    bot.aiState.bounceTimer--;
+    bot.vx = Math.cos(bot.aiState.wander) * bot.speed;
+    bot.vy = Math.sin(bot.aiState.wander) * bot.speed;
+    return;
+  }
+
+  // Bots hunt anything strictly smaller and flee from anything strictly bigger.
+  // Eat still gated by EAT_RATIO (§5.4); this just controls the AI decision.
   let flee = null, fleeD = Infinity;
   let chase = null, chaseD = Infinity;
   for (const o of orbs) {
     if (o === bot || !o.alive) continue;
     const d = Math.hypot(o.x - bot.x, o.y - bot.y);
-    if (d > 400) continue;
-    if (o.r >= bot.r * EAT_RATIO && d < fleeD) { fleeD = d; flee = o; }
-    else if (o.r <= bot.r / EAT_RATIO && d < chaseD) { chaseD = d; chase = o; }
+    if (d > AI_VISION_R) continue;
+    if (o.r > bot.r && d < fleeD) { fleeD = d; flee = o; }
+    else if (o.r < bot.r && d < chaseD) { chaseD = d; chase = o; }
   }
-  let angle;
+
+  // Pick the desired heading. In wander mode we drift the heading directly.
+  let targetAngle;
   if (flee) {
-    angle = Math.atan2(bot.y - flee.y, bot.x - flee.x);
-    bot.aiState.wander = angle;
+    targetAngle = Math.atan2(bot.y - flee.y, bot.x - flee.x);
   } else if (chase) {
-    angle = Math.atan2(chase.y - bot.y, chase.x - bot.x);
-    bot.aiState.wander = angle;
+    targetAngle = Math.atan2(chase.y - bot.y, chase.x - bot.x);
   } else {
-    bot.aiState.wander += rand(-0.08, 0.08);
-    angle = bot.aiState.wander;
+    bot.aiState.wander += rand(-0.05, 0.05);
+    targetAngle = bot.aiState.wander;
   }
-  bot.vx = Math.cos(angle) * bot.speed;
-  bot.vy = Math.sin(angle) * bot.speed;
+
+  // Smoothly rotate current heading toward target angle.
+  let delta = targetAngle - bot.aiState.wander;
+  while (delta > Math.PI) delta -= 2 * Math.PI;
+  while (delta < -Math.PI) delta += 2 * Math.PI;
+  if (delta > AI_MAX_TURN) delta = AI_MAX_TURN;
+  else if (delta < -AI_MAX_TURN) delta = -AI_MAX_TURN;
+  bot.aiState.wander += delta;
+
+  bot.vx = Math.cos(bot.aiState.wander) * bot.speed;
+  bot.vy = Math.sin(bot.aiState.wander) * bot.speed;
 }
 
 // ============================================================
@@ -403,6 +511,9 @@ function botThink(bot) {
 function moveOrb(orb) {
   orb.x += orb.vx;
   orb.y += orb.vy;
+  const sp2 = orb.vx*orb.vx + orb.vy*orb.vy;
+  orb.moving = sp2 > 0.1;
+  if (orb.moving) orb.headingAngle = Math.atan2(orb.vy, orb.vx);
   if (orb.kind === 'player') {
     if (orb.x < orb.r)           { orb.x = orb.r; orb.vx = 0; }
     if (orb.x > WORLD_W - orb.r) { orb.x = WORLD_W - orb.r; orb.vx = 0; }
@@ -414,7 +525,10 @@ function moveOrb(orb) {
     if (orb.x > WORLD_W - orb.r) { orb.x = WORLD_W - orb.r; orb.vx = -orb.vx; bounced = true; }
     if (orb.y < orb.r)           { orb.y = orb.r; orb.vy = -orb.vy; bounced = true; }
     if (orb.y > WORLD_H - orb.r) { orb.y = WORLD_H - orb.r; orb.vy = -orb.vy; bounced = true; }
-    if (bounced) orb.aiState.wander = Math.atan2(orb.vy, orb.vx);
+    if (bounced) {
+      orb.aiState.wander = Math.atan2(orb.vy, orb.vx);
+      orb.aiState.bounceTimer = AI_BOUNCE_FRAMES;
+    }
   }
 }
 
@@ -432,7 +546,10 @@ function handleConsumption() {
       const small = big === a ? b : a;
       if (big.r < small.r * EAT_RATIO) continue;
       const d = Math.hypot(a.x - b.x, a.y - b.y);
-      if (d < big.r * EAT_RATIO) {
+      // Eat triggers as soon as the small orb visibly overlaps the big one
+      // (~25% of small's diameter inside big). Includes small.r so the
+      // overlap-fraction is consistent across size ratios.
+      if (d < big.r + small.r * 0.5) {
         small.alive = false;
         big.score += POINTS_PER_EAT;
         small.score = Math.max(0, small.score - POINTS_PER_DEATH);
@@ -440,6 +557,7 @@ function handleConsumption() {
         if (roll === 'grow') big.r = Math.min(big.r + GROW_AMOUNT, MAX_RADIUS);
         else big.speed = Math.min(big.speed + SPEED_AMOUNT, MAX_SPEED);
         broadcast({ type: 'event', kind: 'eat', eaterId: big.id, victimId: small.id, roll });
+        spawnConsumeFx(small.x, small.y, small.color);
         if (small.kind === 'ai') botRespawnTimers.set(small.id, BOT_RESPAWN_FRAMES);
       }
     }
@@ -452,9 +570,11 @@ function handleBotRespawn() {
       if (bot) {
         const pos = findSafeSpawn();
         bot.x = pos.x; bot.y = pos.y;
-        bot.r = rand(10, 18); bot.speed = rand(2.2, 3.0);
+        bot.r = AI_SPAWN_RADIUS + rand(-AI_SPAWN_RADIUS_JITTER, AI_SPAWN_RADIUS_JITTER);
+        bot.speed = AI_SPAWN_SPEED;
         bot.vx = 0; bot.vy = 0; bot.alive = true;
         bot.aiState.wander = Math.random()*Math.PI*2;
+        spawnSpawnFx(bot.x, bot.y, bot.color);
       }
       botRespawnTimers.delete(id);
     } else {
@@ -470,6 +590,7 @@ function handlePlayerRespawns() {
       orb.x = pos.x; orb.y = pos.y;
       orb.r = START_RADIUS; orb.speed = START_SPEED;
       orb.vx = 0; orb.vy = 0; orb.alive = true;
+      spawnSpawnFx(orb.x, orb.y, orb.color);
     }
   }
   pendingRespawns.clear();
@@ -496,6 +617,7 @@ function checkVictory() {
 function broadcast(msg) {
   if (role !== 'host') return;
   for (const conn of conns.values()) {
+    if (!conn.open) continue; // skip not-yet-open conns: send() would emit 'error' on them
     try { conn.send(msg); } catch (e) { if (DEBUG_NET) console.warn('broadcast send fail', e); }
   }
 }
@@ -510,7 +632,7 @@ function broadcastState() {
     orbs: orbs.map(o => ({
       id: o.id, kind: o.kind, name: o.name, color: o.color,
       x: Math.round(o.x), y: Math.round(o.y), r: Math.round(o.r*10)/10,
-      score: o.score, alive: o.alive
+      score: o.score, alive: o.alive, speed: Math.round(o.speed*100)/100
     }))
   };
   broadcast(snap);
@@ -527,22 +649,37 @@ function setupHostConn(conn) {
   conn.on('open', () => { if (DEBUG_NET) console.log('[host] conn open', conn.peer); });
   conn.on('data', data => onHostReceive(conn.peer, data));
   conn.on('close', () => { if (DEBUG_NET) console.log('[host] conn close', conn.peer); onJoinerLeave(conn.peer); });
-  conn.on('error', e => { if (DEBUG_NET) console.warn('[host] conn error', conn.peer, e); onJoinerLeave(conn.peer); });
+  // Errors on a DataConnection are NOT fatal (e.g. trying to send before the channel
+  // is open emits one). Just log; let conn.on('close') be the single source of truth
+  // for removing the joiner.
+  conn.on('error', e => { if (DEBUG_NET) console.warn('[host] conn error (non-fatal)', conn.peer, e && (e.type || e.message || e)); });
 }
 function onHostReceive(peerId, msg) {
   if (!msg || !msg.type) return;
   if (DEBUG_NET && msg.type !== 'input') console.log('[host] recv', msg.type, 'from', peerId);
   if (msg.type === 'hello') {
+    const playerName = (msg.name || 'Anon').slice(0,14);
+    const playerColor = msg.color || PALETTE[0];
+    const isNewJoin = !lobby.find(p => p.id === peerId);
     lobby = lobby.filter(p => p.id !== peerId);
-    lobby.push({ id: peerId, name: (msg.name || 'Anon').slice(0,14), color: msg.color || PALETTE[0] });
+    lobby.push({ id: peerId, name: playerName, color: playerColor });
     const conn = conns.get(peerId);
-    if (conn && conn.open) conn.send({ type: 'welcome', selfId: peerId, lobby, winScore });
+    if (conn) { try { conn.send({ type: 'welcome', selfId: peerId, lobby, winScore }); } catch (e) {} }
     broadcastLobby();
     if (mode === 'playing') {
-      // Late join: spawn an orb and send start
+      // Late join: spawn an orb and send start so the joiner enters playing state.
       const existing = orbs.find(o => o.id === peerId);
-      if (!existing) orbs.push(makePlayerOrb(peerId, msg.name, msg.color, findSafeSpawn()));
-      if (conn && conn.open) conn.send({ type: 'start', winScore });
+      if (!existing) orbs.push(makePlayerOrb(peerId, playerName, playerColor, findSafeSpawn()));
+      if (conn) { try { conn.send({ type: 'start', winScore }); } catch (e) {} }
+    }
+    if (isNewJoin) {
+      const noticeText = `${playerName} joined`;
+      pushNotification(noticeText, playerColor);
+      // Broadcast to everyone else (the new joiner already knows they joined).
+      for (const [pid, c] of conns) {
+        if (pid === peerId) continue;
+        try { c.send({ type: 'notice', text: noticeText, color: playerColor }); } catch (e) {}
+      }
     }
   } else if (msg.type === 'input') {
     joinerInputs.set(peerId, msg);
@@ -552,11 +689,22 @@ function onHostReceive(peerId, msg) {
   }
 }
 function onJoinerLeave(peerId) {
+  if (!conns.has(peerId) && !lobby.find(p => p.id === peerId)) {
+    // Already cleaned up — avoid duplicate notifications if both 'close' and 'error' fire.
+    return;
+  }
+  const player = lobby.find(p => p.id === peerId);
+  const playerName = player ? player.name : 'Player';
+  const playerColor = player ? player.color : '#ff5b5b';
+  if (DEBUG_NET) console.log('[host] joiner leave', peerId, playerName);
   lobby = lobby.filter(p => p.id !== peerId);
   conns.delete(peerId);
   joinerInputs.delete(peerId);
   orbs = orbs.filter(o => o.id !== peerId);
   broadcastLobby();
+  const noticeText = `${playerName} left`;
+  pushNotification(noticeText, playerColor);
+  broadcast({ type: 'notice', text: noticeText, color: playerColor });
 }
 
 function onJoinerReceive(msg) {
@@ -589,25 +737,76 @@ function onJoinerReceive(msg) {
     hideDeadOverlay();
     lastMyAlive = true;
     mode = 'playing';
+  } else if (msg.type === 'notice') {
+    pushNotification(msg.text, msg.color);
+  } else if (msg.type === 'event' && msg.kind === 'eat') {
+    // Spawn consume particles at the victim's last known position (joiner side).
+    const victim = orbs.find(o => o.id === msg.victimId);
+    if (victim) spawnConsumeFx(victim.x, victim.y, victim.color);
   }
 }
 
+// Joiner: snapshot arrives at ~20 Hz. We don't snap to authoritative values —
+// we store them as TARGETS and let the render loop lerp every frame for smooth
+// motion at 60 fps. Teleports (respawn, alive flips) snap directly because lerping
+// across the arena would look like a glitch.
 function applySnapshot(snap) {
   const byId = new Map(orbs.map(o => [o.id, o]));
   const seen = new Set();
+  const TELEPORT_DIST = 200; // px — distance jump above which we snap instead of lerp
   for (const s of snap.orbs) {
     let o = byId.get(s.id);
     if (!o) {
+      // New orb: place it exactly where the host has it. No spawn FX on first sight
+      // (otherwise late-joiners get a particle explosion across the whole arena).
       o = { id: s.id, kind: s.kind, name: s.name, color: s.color, darkColor: darken(s.color),
-            x: s.x, y: s.y, vx: 0, vy: 0, r: s.r, score: s.score, alive: s.alive };
+            x: s.x, y: s.y, vx: 0, vy: 0, r: s.r, score: s.score, alive: s.alive,
+            speed: s.speed != null ? s.speed : START_SPEED,
+            targetX: s.x, targetY: s.y, targetR: s.r,
+            pulseOffset: Math.random() * Math.PI * 2,
+            headingAngle: 0, moving: false };
       orbs.push(o);
     } else {
       o.name = s.name; o.color = s.color; o.darkColor = darken(s.color);
-      o.x = s.x; o.y = s.y; o.r = s.r; o.score = s.score; o.alive = s.alive;
+      o.score = s.score;
+      if (s.speed != null) o.speed = s.speed;
+      const wasAlive = o.alive;
+      o.alive = s.alive;
+      // Respawn FX: orb was dead, now alive again.
+      if (!wasAlive && s.alive) spawnSpawnFx(s.x, s.y, s.color);
+      // Snap on respawn / large position jumps; otherwise set targets for lerp.
+      const jumped = Math.hypot(s.x - o.x, s.y - o.y) > TELEPORT_DIST;
+      if (jumped || s.alive !== wasAlive) {
+        o.x = s.x; o.y = s.y; o.r = s.r;
+        o.targetX = s.x; o.targetY = s.y; o.targetR = s.r;
+      } else {
+        o.targetX = s.x; o.targetY = s.y; o.targetR = s.r;
+      }
     }
     seen.add(s.id);
   }
   orbs = orbs.filter(o => seen.has(o.id));
+}
+
+// Smoothly move joiner-side orb positions toward their authoritative targets.
+// Called every render frame so motion feels continuous even with 20 Hz snapshots.
+function interpolateJoinerOrbs() {
+  const LERP = 0.32; // ~3 render frames at 60 fps to reach a fresh target
+  for (const o of orbs) {
+    if (o.targetX == null) continue;
+    const dx = o.targetX - o.x;
+    const dy = o.targetY - o.y;
+    const d2 = dx*dx + dy*dy;
+    o.moving = d2 > 0.25;
+    if (o.moving) o.headingAngle = Math.atan2(dy, dx);
+    o.x += dx * LERP;
+    o.y += dy * LERP;
+    if (o.targetR != null) {
+      const dr = o.targetR - o.r;
+      if (Math.abs(dr) > 20) o.r = o.targetR;
+      else o.r += dr * LERP;
+    }
+  }
 }
 
 // ============================================================
@@ -644,7 +843,7 @@ function resetSession() {
     o.x = pos.x; o.y = pos.y;
     o.vx = 0; o.vy = 0;
     if (o.kind === 'player') { o.r = START_RADIUS; o.speed = START_SPEED; }
-    else { o.r = rand(10,18); o.speed = rand(2.2,3.0); o.aiState.wander = Math.random()*Math.PI*2; }
+    else { o.r = AI_SPAWN_RADIUS + rand(-AI_SPAWN_RADIUS_JITTER, AI_SPAWN_RADIUS_JITTER); o.speed = AI_SPAWN_SPEED; o.aiState.wander = Math.random()*Math.PI*2; }
   }
   botRespawnTimers.clear();
   pendingRespawns.clear();
@@ -726,15 +925,20 @@ function hideDeadOverlay() {
 // ============================================================
 // Main loop
 // ============================================================
-function tick() {
-  try { tickInner(); } catch (e) { console.error('[tick] error', e); }
-  requestAnimationFrame(tick);
+// Simulation tick — runs on setInterval so it's independent of rendering frame rate.
+// A heavy overlay (backdrop-filter, etc.) slowing rAF will NOT slow down the sim,
+// so joiners keep getting timely state broadcasts.
+function simTick() {
+  try { simTickInner(); } catch (e) { console.error('[simTick] error', e); }
 }
 
-function tickInner() {
+function simTickInner() {
+  // Cheap early-out in menu / lobby states — nothing to simulate, no inputs to send.
+  // Saves 60 wakeups/sec of idle CPU while the user is staring at the menu.
+  if (mode !== 'playing') return;
   frame++;
 
-  // Host: simulate every frame the session is live (don't pause when locally dead).
+  // Host: simulate every tick the session is live (don't pause when locally dead).
   if (role === 'host' && mode === 'playing') {
     const meHost = orbs.find(o => o.id === selfPeerId);
     if (meHost && meHost.alive) applyInputToOrb(meHost, getLocalInput());
@@ -754,7 +958,7 @@ function tickInner() {
     if (frame % STATE_TICK_INTERVAL === 0) broadcastState();
   }
 
-  // Joiner: send input every frame (host ignores if our orb is dead).
+  // Joiner: send input every tick (host ignores if our orb is dead).
   if (role === 'join' && mode === 'playing') {
     const input = getLocalInput();
     input.type = 'input';
@@ -764,28 +968,11 @@ function tickInner() {
 
   // Local death transition (alive -> dead). Mode does NOT change; sim keeps running.
   const me = orbs.find(o => o.id === myOrbId);
-  if (mode === 'playing' && me && lastMyAlive && !me.alive) {
-    showDeadOverlay();
-  }
-  // Auto-hide dead overlay if our orb is alive again (e.g., after respawn).
-  if (isDeadOverlayActive && me && me.alive) {
-    hideDeadOverlay();
-  }
+  if (mode === 'playing' && me && lastMyAlive && !me.alive) showDeadOverlay();
+  if (isDeadOverlayActive && me && me.alive) hideDeadOverlay();
   lastMyAlive = me ? me.alive : true;
 
-  // Camera follow
-  if (me) {
-    camera.x += (me.x - camera.x) * 0.12;
-    camera.y += (me.y - camera.y) * 0.12;
-  } else {
-    camera.x += (WORLD_W/2 - camera.x) * 0.05;
-    camera.y += (WORLD_H/2 - camera.y) * 0.05;
-  }
-
-  render();
-  if (frame % 6 === 0) updateHUD();
-
-  // Heartbeat every ~3 seconds
+  // Heartbeat every ~3 seconds (at 60Hz sim that's 180 ticks)
   if (DEBUG_NET && frame % 180 === 0 && (role === 'host' || role === 'join')) {
     const meHb = orbs.find(o => o.id === myOrbId);
     if (role === 'host') {
@@ -798,6 +985,33 @@ function tickInner() {
       }
     }
   }
+}
+
+// Render loop — separate from sim. Slow rendering only affects visual smoothness,
+// not the underlying simulation or network broadcasts.
+let renderFrame = 0;
+function renderLoop() {
+  try { renderLoopInner(); } catch (e) { console.error('[render] error', e); }
+  requestAnimationFrame(renderLoop);
+}
+function renderLoopInner() {
+  // In menu / lobby / disconnected states the canvas isn't visible (overlay
+  // covers it). Skip the entire frame to keep idle CPU/GPU at ~0.
+  if (mode === 'menu' || mode === 'hosting' || mode === 'joining' || mode === 'disconnected') return;
+  renderFrame++;
+  // Joiner: smooth out 20 Hz snapshots into 60 fps motion before rendering.
+  if (role === 'join' && mode === 'playing') interpolateJoinerOrbs();
+  updateParticles();
+  const me = orbs.find(o => o.id === myOrbId);
+  if (me) {
+    camera.x += (me.x - camera.x) * 0.12;
+    camera.y += (me.y - camera.y) * 0.12;
+  } else {
+    camera.x += (WORLD_W/2 - camera.x) * 0.05;
+    camera.y += (WORLD_H/2 - camera.y) * 0.05;
+  }
+  render();
+  if (renderFrame % 6 === 0) updateHUD();
 }
 
 // ============================================================
@@ -837,38 +1051,61 @@ function render() {
   ctx.shadowBlur = 0;
 
   // Orbs (smallest first → big ones overlap)
+  const now = performance.now();
   const sorted = [...orbs].filter(o => o.alive).sort((a,b) => a.r - b.r);
   for (const o of sorted) {
     const s = worldToScreen(o.x, o.y);
-    if (s.x + o.r < -20 || s.x - o.r > canvas.width + 20) continue;
-    if (s.y + o.r < -20 || s.y - o.r > canvas.height + 20) continue;
+    if (s.x + o.r < -30 || s.x - o.r > canvas.width + 30) continue;
+    if (s.y + o.r < -30 || s.y - o.r > canvas.height + 30) continue;
+
+    // Subtle pulse while moving (±5% radius)
+    const pulse = o.moving ? Math.sin(now * 0.012 + (o.pulseOffset || 0)) * 0.05 : 0;
+    const drawR = o.r * (1 + pulse);
+
+    // Body
     if (o.id === myOrbId) { ctx.shadowBlur = 16; ctx.shadowColor = o.color; }
     ctx.fillStyle = o.color;
     ctx.beginPath();
-    ctx.arc(s.x, s.y, o.r, 0, Math.PI*2);
+    ctx.arc(s.x, s.y, drawR, 0, Math.PI*2);
     ctx.fill();
     ctx.shadowBlur = 0;
     ctx.strokeStyle = o.darkColor;
     ctx.lineWidth = 2;
     ctx.stroke();
-    // bubble highlight
-    ctx.fillStyle = 'rgba(255,255,255,0.28)';
-    ctx.beginPath();
-    ctx.arc(s.x - o.r*0.32, s.y - o.r*0.32, Math.max(2, o.r*0.28), 0, Math.PI*2);
-    ctx.fill();
-    // name
-    if (o.r > 8) {
-      const fs = Math.max(11, Math.min(20, o.r * 0.7));
+
+    // Eyes — two whites with pupils that look in the direction of movement
+    const heading = o.headingAngle != null ? o.headingAngle : 0;
+    const eyeR = Math.max(2, drawR * 0.22);
+    const eyeDist = drawR * 0.42;
+    const pupilR = Math.max(1, eyeR * 0.55);
+    const eyeAngleOff = 0.55;
+    for (const side of [-1, 1]) {
+      const ea = heading + side * eyeAngleOff;
+      const ex = s.x + Math.cos(ea) * eyeDist;
+      const ey = s.y + Math.sin(ea) * eyeDist;
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(ex, ey, eyeR, 0, Math.PI*2); ctx.fill();
+      // pupil drifts forward toward heading
+      const px = ex + Math.cos(heading) * eyeR * 0.4;
+      const py = ey + Math.sin(heading) * eyeR * 0.4;
+      ctx.fillStyle = '#0a0a0a';
+      ctx.beginPath(); ctx.arc(px, py, pupilR, 0, Math.PI*2); ctx.fill();
+    }
+
+    // Name
+    if (drawR > 8) {
+      const fs = Math.max(11, Math.min(20, drawR * 0.7));
       ctx.font = `${fs}px -apple-system, system-ui, sans-serif`;
       ctx.textAlign = 'center';
       ctx.lineWidth = 3;
       ctx.strokeStyle = 'rgba(0,0,0,0.8)';
       ctx.fillStyle = '#fff';
-      ctx.strokeText(o.name, s.x, s.y - o.r - 6);
-      ctx.fillText(o.name, s.x, s.y - o.r - 6);
+      ctx.strokeText(o.name, s.x, s.y - drawR - 6);
+      ctx.fillText(o.name, s.x, s.y - drawR - 6);
     }
   }
 
+  renderParticles();
   renderMinimap();
 }
 
@@ -898,13 +1135,16 @@ function renderMinimap() {
 }
 
 function updateHUD() {
+  try { updateHUDInner(); } catch (e) { console.error('[updateHUD] error', e); }
+}
+function updateHUDInner() {
   if (mode !== 'playing' && mode !== 'dead' && mode !== 'victory') return;
   const me = orbs.find(o => o.id === myOrbId);
   if (me) {
-    document.getElementById('stat-score').textContent = me.score;
-    document.getElementById('score-progress').style.width = Math.min(100, (me.score / winScore) * 100) + '%';
-    document.getElementById('stat-radius').textContent = me.r.toFixed(1);
-    document.getElementById('stat-speed').textContent = me.speed.toFixed(2);
+    document.getElementById('stat-score').textContent = me.score ?? 0;
+    document.getElementById('score-progress').style.width = Math.min(100, ((me.score ?? 0) / winScore) * 100) + '%';
+    document.getElementById('stat-radius').textContent = (me.r ?? 0).toFixed(1);
+    document.getElementById('stat-speed').textContent = (me.speed ?? 0).toFixed(2);
   }
   const top = [...orbs].sort((a,b) => b.score - a.score).slice(0, 6);
   document.getElementById('lb-list').innerHTML = top.map(o => `
@@ -964,6 +1204,13 @@ document.getElementById('btn-join-back').addEventListener('click', () => {
   hostConn = null; role = null;
   showOverlay('menu'); mode = 'menu';
 });
+document.getElementById('btn-host-retry').addEventListener('click', () => {
+  hostRetries = 0;
+  document.getElementById('btn-host-retry').style.display = 'none';
+  document.getElementById('host-peer-id').textContent = 'connecting to broker…';
+  initHostPeer();
+});
+
 document.getElementById('btn-copy-id').addEventListener('click', async () => {
   if (!selfPeerId) return;
   try {
@@ -1024,35 +1271,71 @@ function updatePresetSelected() {
 // ============================================================
 // PeerJS bring-up
 // ============================================================
+let hostRetries = 0;
+const PEER_RECOVERABLE_ERRORS = ['network','disconnected','socket-error','server-error','socket-closed'];
+
 function startHost() {
   role = 'host';
   showOverlay('hosting');
   mode = 'hosting';
-  document.getElementById('host-peer-id').textContent = 'connecting…';
+  hostRetries = 0;
+  document.getElementById('btn-host-retry').style.display = 'none';
+  document.getElementById('host-peer-id').textContent = 'connecting to broker…';
+  initHostPeer();
+}
+
+function initHostPeer() {
+  if (peer) { try { peer.destroy(); } catch (e) {} peer = null; }
   peer = new Peer();
   peer.on('open', id => {
+    hostRetries = 0;
     selfPeerId = id;
     document.getElementById('host-peer-id').textContent = id;
+    document.getElementById('btn-host-retry').style.display = 'none';
     renderLobbyList();
     updatePresetSelected();
+    if (DEBUG_NET) console.log('[host] peer open, id =', id);
   });
   peer.on('connection', conn => setupHostConn(conn));
+  peer.on('disconnected', () => {
+    if (DEBUG_NET) console.warn('[host] disconnected from broker, attempting silent reconnect');
+    try { if (peer && !peer.destroyed) peer.reconnect(); } catch (e) {}
+  });
   peer.on('error', err => {
-    console.error('peer error', err);
-    document.getElementById('host-peer-id').textContent = 'Error: ' + (err.message || err.type || 'unknown');
+    const type = err.type || 'unknown';
+    console.error('[host] peer error', type, err.message || '');
+    if (PEER_RECOVERABLE_ERRORS.includes(type) && hostRetries < 3) {
+      hostRetries++;
+      const delay = 1500 * hostRetries;
+      document.getElementById('host-peer-id').textContent = `Broker unreachable, retrying ${hostRetries}/3 in ${(delay/1000).toFixed(1)}s…`;
+      setTimeout(initHostPeer, delay);
+    } else {
+      document.getElementById('host-peer-id').textContent = `Cannot reach broker (${type}). Check your network, VPN, or click Retry.`;
+      document.getElementById('btn-host-retry').style.display = '';
+    }
   });
 }
 
+let joinRetries = 0;
+let pendingHostId = null;
+
 function startJoin(hostId) {
   role = 'join';
+  pendingHostId = hostId;
+  joinRetries = 0;
   setJoinStatus('Connecting to broker…');
+  initJoinPeer();
+}
+
+function initJoinPeer() {
+  if (peer) { try { peer.destroy(); } catch (e) {} peer = null; }
   peer = new Peer();
   peer.on('open', id => {
+    joinRetries = 0;
     selfPeerId = id;
     setJoinStatus('Connecting to host…');
-    const conn = peer.connect(hostId, { reliable: true });
+    const conn = peer.connect(pendingHostId, { reliable: true });
     hostConn = conn;
-    // Register data handler BEFORE open to make sure no message is missed.
     conn.on('data', onJoinerReceive);
     conn.on('open', () => {
       if (DEBUG_NET) console.log('[joiner] conn open, sending hello');
@@ -1066,13 +1349,28 @@ function startJoin(hostId) {
         showHUD(false);
         document.getElementById('disconnect-reason').textContent = 'Host disconnected.';
       } else {
-        setJoinStatus('Host disconnected.');
+        setJoinStatus('Host disconnected (the session may not exist or has ended).');
       }
     });
     conn.on('error', e => setJoinStatus('Connection error: ' + (e.message || e.type || 'unknown')));
   });
+  peer.on('disconnected', () => {
+    if (DEBUG_NET) console.warn('[joiner] disconnected from broker, attempting silent reconnect');
+    try { if (peer && !peer.destroyed) peer.reconnect(); } catch (e) {}
+  });
   peer.on('error', err => {
-    setJoinStatus('Peer error: ' + (err.message || err.type || 'unknown'));
+    const type = err.type || 'unknown';
+    console.error('[joiner] peer error', type, err.message || '');
+    if (PEER_RECOVERABLE_ERRORS.includes(type) && joinRetries < 3) {
+      joinRetries++;
+      const delay = 1500 * joinRetries;
+      setJoinStatus(`Broker unreachable, retrying ${joinRetries}/3 in ${(delay/1000).toFixed(1)}s…`);
+      setTimeout(initJoinPeer, delay);
+    } else if (type === 'peer-unavailable') {
+      setJoinStatus('No host found with that ID. Check the ID and try again.');
+    } else {
+      setJoinStatus(`Cannot reach broker (${type}). Check your network or try again.`);
+    }
   });
 }
 
@@ -1091,7 +1389,8 @@ document.addEventListener('visibilitychange', () => {
 showOverlay('menu');
 showHUD(false);
 updatePresetSelected();
-requestAnimationFrame(tick);
+setInterval(simTick, 1000 / 60); // sim @ 60Hz (independent of render)
+requestAnimationFrame(renderLoop);
 </script>
 </body>
 </html>

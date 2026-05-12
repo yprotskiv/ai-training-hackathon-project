@@ -48,7 +48,7 @@ A browser-based, P2P-multiplayer arena game where colored circles hunt each othe
 | Parameter | Value | Notes |
 |---|---|---|
 | Arena shape | Square | Axis-aligned |
-| `WORLD_W`, `WORLD_H` | 3000, 3000 px | Top-left origin `(0, 0)`, bottom-right `(3000, 3000)` |
+| `WORLD_W`, `WORLD_H` | 2100, 2100 px | Top-left origin `(0, 0)`, bottom-right `(2100, 2100)` |
 | Wall behavior (players) | Hard clamp | Player orb's position is clamped to the arena; velocity component into the wall is zeroed (orb stops sliding into the wall) |
 | Wall behavior (AI) | Reflect | AI orbs bounce off walls: position is clamped, then the velocity component normal to that wall is **negated** (elastic bounce, no energy loss) |
 | Background | Dark slate `#0e1320` with faint grid | Grid step 100 px, parallax with camera |
@@ -83,21 +83,25 @@ All living things in the arena are **Orbs** — there is no separate "food" conc
 
 | Parameter | Value |
 |---|---|
-| `START_RADIUS` | 14 px |
+| `START_RADIUS` | 16 px |
 | `MAX_RADIUS` | 120 px |
 | `START_SPEED` | 2.6 px/frame |
 | `MAX_SPEED` | 6.0 px/frame |
 | `GROW_AMOUNT` | +3 px radius per eat |
 | `SPEED_AMOUNT` | +0.25 px/frame per eat |
 | `GROW_VS_BOOST` | 50/50 random roll on eat |
-| `EAT_RATIO` | 1.10 (eater must be ≥10% larger to consume) |
-| `BOT_COUNT` | 20 (host-side only) |
+| `EAT_RATIO` | 1.10 (size gate: eater must be ≥10% larger than victim) |
+| Eat distance | `d < big.r + small.r * 0.5` (overlap-based: triggers once ~25% of the small orb's diameter is inside the big one) |
+| `BOT_COUNT` | 30 (host-side only) |
 | `BOT_RESPAWN_FRAMES` | 240 (~4 s @ 60 fps) |
+| `AI_SPAWN_RADIUS` | 12 (baseline; actual spawn radius is `12 ± AI_SPAWN_RADIUS_JITTER`) |
+| `AI_SPAWN_RADIUS_JITTER` | 2 (small random variation around baseline so bots have enough size diversity to consume each other; range = [10, 14]) |
+| `AI_SPAWN_SPEED` | 2.4 (fixed; all bots spawn at this speed, slower than player `START_SPEED`) |
 | `SAFE_SPAWN_RADIUS` | 250 px (no other live orb may be within this distance of a respawn point) |
 | `SAFE_SPAWN_MAX_TRIES` | 30 (attempts to find a clear point before fallback) |
-| `POINTS_PER_EAT` | +10 (awarded to the eater on consumption) |
+| `POINTS_PER_EAT` | +5 (awarded to the eater on consumption) |
 | `POINTS_PER_DEATH` | −2 (deducted from the victim; clamped at 0) |
-| `WIN_SCORE_DEFAULT` | 100 (default; host can override before starting — see §7.2) |
+| `WIN_SCORE_DEFAULT` | 500 (default; host can override before starting — see §7.2) |
 | `WIN_SCORE_MIN` | 20 |
 | `WIN_SCORE_MAX` | 1000 |
 | `WIN_SCORE_STEP` | 10 |
@@ -113,9 +117,9 @@ All living things in the arena are **Orbs** — there is no separate "food" conc
 
 ### 5.4 Consumption
 
-When orb A's center is within `B.r * EAT_RATIO` of orb B's center **and** A.r ≥ B.r × `EAT_RATIO`:
+When orbs A and B overlap (`distance(A, B) < bigger.r + smaller.r * 0.5`, i.e. ~25% of the smaller's diameter is inside the bigger) **and** the bigger one is at least `EAT_RATIO` × the smaller's radius (size gate):
 - B is marked `alive = false`.
-- `A.score += POINTS_PER_EAT` (default +10).
+- `A.score += POINTS_PER_EAT` (default +5).
 - `B.score = max(0, B.score - POINTS_PER_DEATH_ABS)` (default −2; clamped at 0 — score never goes negative).
 - A rolls `Math.random() < 0.5`:
   - **Grow:** `A.r = min(A.r + GROW_AMOUNT, MAX_RADIUS)`.
@@ -152,11 +156,11 @@ The session score is the central competitive metric. Each player and bot has a `
 
 | Trigger | Effect |
 |---|---|
-| Eat another orb | `eater.score += POINTS_PER_EAT` (default +10) |
+| Eat another orb | `eater.score += POINTS_PER_EAT` (default +5) |
 | Be eaten | `victim.score = max(0, victim.score − 2)` |
 | Respawn | Score is **not** reset — it carries forward |
 
-**Victory condition:** the first orb (player **or** bot) whose `score` reaches the session's `WIN_SCORE` wins. The host picks `WIN_SCORE` in the lobby before starting (see §7.2); default 100 (= 10 net eats with no deaths).
+**Victory condition:** the first orb (player **or** bot) whose `score` reaches the session's `WIN_SCORE` wins. The host picks `WIN_SCORE` in the lobby before starting (see §7.2); default 500 (= 100 net eats with no deaths).
 
 When the host detects a winner:
 1. Host broadcasts `{ type: "victory", winnerId, winnerName, finalScores: [...] }`.
@@ -211,7 +215,7 @@ The local player chooses **one** of two input modes (auto-detected: keyboard win
 ### 7.2 Host: win score selector
 
 In the **Hosting** state, the host sees a numeric input labelled **Target score** with:
-- Default value: `WIN_SCORE_DEFAULT` (100).
+- Default value: `WIN_SCORE_DEFAULT` (500).
 - Range: `WIN_SCORE_MIN`..`WIN_SCORE_MAX` (20..1000), step `WIN_SCORE_STEP` (10).
 - Quick-pick presets shown as buttons next to the input: **50** (short), **100** (standard), **200** (long), **500** (marathon).
 - Out-of-range input is clamped on blur; non-numeric input falls back to the default.
@@ -262,20 +266,27 @@ If two players pick the same color, the second player gets a thin white inner ri
 | Host → Joiner | `welcome` | `{ selfId, lobby }` | Once on accept |
 | Host → All | `lobby` | `{ players: [{id, name, color}], winScore }` | On lobby change OR when host edits win score |
 | Host → All | `start` | `{ winScore }` | On host clicking Start (locks the session win score) |
-| Host → All | `state` | `{ t, orbs: [{id, x, y, r, color, name, alive, score}] }` | 20 Hz |
+| Host → All | `state` | `{ t, orbs: [{id, kind, x, y, r, color, name, alive, score, speed}] }` | 30 Hz |
 | Host → All | `event` | `{ kind: "eat", eaterId, victimId, roll: "grow"\|"boost" }` | On event |
 | Host → All | `victory` | `{ winnerId, winnerName, winnerColor, finalScores: [{id, name, score}] }` | Once when an orb reaches `WIN_SCORE` |
 | Host → All | `reset` | `{ winScore }` | When host clicks **Start New Session** from the Victory overlay (may carry a new `winScore` if host changed it) |
+| Host → All (minus source) | `notice` | `{ text, color }` | On player join / leave; rendered as a transient toast in the bottom-left of every recipient's screen |
 
-**State message format:** orbs array is sent in full each tick (small N, simple to reason about). Each orb entry: `[id, x|0, y|0, r|0, score, alive ? 1 : 0]` — positions rounded to integers to keep payloads small. With ~28 orbs total (8 players + 20 bots) × ~22 bytes each = ~620 B/tick × 20 Hz ≈ 12 KB/s/joiner. Acceptable.
+**State message format:** orbs array is sent in full each tick (small N, simple to reason about). Each orb entry: `[id, x|0, y|0, r|0, score, alive ? 1 : 0]` — positions rounded to integers to keep payloads small. With ~38 orbs total (8 players + 30 bots) × ~22 bytes each = ~835 B/tick × 20 Hz ≈ 17 KB/s/joiner. Acceptable.
 
-### 8.3 Client-side prediction (joiners)
+### 8.3 Client-side interpolation (joiners)
 
-To hide ~50–100 ms RTT latency, joiners locally simulate their **own** orb movement from input, then reconcile when the next authoritative `state` arrives:
-- If predicted position is within 30 px of authoritative, ignore (smoothing).
-- Otherwise lerp toward authoritative over 5 frames.
+Joiners receive `state` snapshots at `STATE_HZ` (30 Hz) but render at ~60 fps. Snapping orb positions directly produces visible stepping. Instead, joiners apply the snapshot to **target** positions (`targetX`, `targetY`, `targetR`) and the render loop lerps current positions toward target every frame:
 
-Other players' orbs are pure interpolation between the last two `state` snapshots (no prediction).
+```
+LERP = 0.32  // ~3 render frames to converge on a fresh target at 60 fps
+o.x += (o.targetX - o.x) * LERP
+o.y += (o.targetY - o.y) * LERP
+```
+
+Teleports (orb respawn, or any single-snapshot position jump >200 px) bypass the lerp and snap directly — lerping across the arena would look like a glitch.
+
+Note: there is no input prediction for the local orb. Joiners send input to the host and wait for it to come back authoritatively. RTT latency is visible on the local orb but the interpolator smooths it into continuous motion.
 
 ### 8.4 Disconnects
 
@@ -285,7 +296,8 @@ Other players' orbs are pure interpolation between the last two `state` snapshot
 ### 8.5 Limits
 
 - Recommended max players: **8**. Beyond that, payload sizes and host CPU become noticeable on consumer hardware.
-- No reconnection logic — if a peer drops, they must re-join.
+- **Late join is supported.** A peer that runs `peer.connect(hostId)` after the host clicks **Start Game** receives `welcome` + immediate `start` from the host, and an orb is spawned for them via `findSafeSpawn()` on the next host tick. Everyone in the session sees a `notice` toast naming the joiner.
+- No reconnection logic — if a peer drops, they must re-join (which works the same way as a fresh late join).
 
 ---
 
@@ -295,20 +307,29 @@ Bots exist **only on the host**; joiners only see them through `state` messages.
 
 ### 9.1 Decision priority (highest first)
 
-1. **Flee.** Scan all orbs within 400 px. If any is `≥ self.r * EAT_RATIO`, steer directly away from it.
-2. **Chase.** Scan all orbs within 400 px. If any is `≤ self.r / EAT_RATIO`, steer toward the nearest one.
-3. **Wander.** Jitter `aiState.wander` by `±0.08 rad/frame` and steer along it.
+0. **Bounce cooldown.** If `aiState.bounceTimer > 0`, decrement it and follow the rebound direction stored in `aiState.wander` — ignore chase/flee/wander entirely. Set to `AI_BOUNCE_FRAMES` (30) by `moveOrb` whenever a bot hits a wall, so chase logic can't immediately pin the bot back into the wall.
+1. **Flee.** Scan all orbs within `AI_VISION_R`. If any has `r > self.r` (strictly bigger), steer directly away from the nearest one.
+2. **Chase.** Scan all orbs within `AI_VISION_R`. If any has `r < self.r` (strictly smaller), steer toward the nearest one.
+3. **Wander.** Jitter `aiState.wander` by `±0.05 rad/frame` and steer along it.
+
+The AI decision uses a **simple size comparison**, not `EAT_RATIO`. Bots will pursue rivals they cannot yet eat (size diff <10%) because the visible hunting feels right, and the actual consumption is still gated by `EAT_RATIO` in §5.4 — same-size bots collide harmlessly. Without this looseness, freshly-spawned bots (all in the 10–14 range) rarely find a target that clears the 10% size gate and just wander.
+
+### 9.2 Smooth turning
+
+In chase/flee mode, `aiState.wander` is **lerped** toward the target angle (not snapped), clamped to `AI_MAX_TURN` rad/frame. At 0.06 rad/frame (~3.4°/frame, ~206°/sec) a full 180° turn takes ~0.5 s. Without this clamp, bots used to whip their heading instantly when a target came into range, which looked twitchy.
 
 Note: bots do **not** actively avoid walls. They bounce off them physically (§5.3), which is enough to keep them inside the arena and produces a more lively, chaotic motion than steering avoidance.
 
-### 9.2 Bot tuning
+### 9.3 Bot tuning
 
 | Parameter | Value |
 |---|---|
-| Initial radius | random 10–18 px |
-| Initial speed | random 2.2–3.0 px/frame |
-| `visionR` | 400 px |
-| Wander jitter | ±0.08 rad/frame |
+| Initial radius | `AI_SPAWN_RADIUS` ± `AI_SPAWN_RADIUS_JITTER` (12 ± 2 px, range [10, 14]) |
+| Initial speed | `AI_SPAWN_SPEED` (2.4 px/frame, fixed — slower than `START_SPEED`) |
+| `AI_VISION_R` | 350 px |
+| `AI_MAX_TURN` | 0.06 rad/frame (smooth-turn cap) |
+| `AI_BOUNCE_FRAMES` | 30 (~0.5 s rebound cooldown after hitting a wall) |
+| Wander jitter | ±0.05 rad/frame |
 | Respawn delay | 240 frames |
 
 Bots cannot use mouse/keys — their `vx, vy` are set directly by AI.
@@ -322,7 +343,7 @@ Each host frame, in order:
 1. **Movement integration.** All orbs advance by velocity, clamped to arena bounds.
 2. **Pairwise consumption pass.** For each pair `(a, b)` where both are alive:
    - Compute `d = distance(a, b)`.
-   - If `d < max(a.r, b.r) * EAT_RATIO` and `max(a.r, b.r) ≥ min(a.r, b.r) * EAT_RATIO`:
+   - If `d < max(a.r, b.r) + min(a.r, b.r) * 0.5` (overlap test) **and** `max(a.r, b.r) ≥ min(a.r, b.r) * EAT_RATIO` (size gate):
      - The larger eats the smaller (see §5.4).
 3. **Bot respawn check.** Any dead bot whose `deathFrame + BOT_RESPAWN_FRAMES ≤ now` respawns via `findSafeSpawn()` (§5.5) with default starting stats.
 4. **Player respawn check.** Any joiner that sent a `respawn` message (and the host's own player on local click) is respawned via `findSafeSpawn()` (§5.5) with default starting stats.
@@ -341,7 +362,13 @@ Every peer renders independently from its local copy of the orb list (authoritat
 3. Draw arena boundary rectangle.
 4. Draw all orbs in ascending `r` order so big ones overlap small ones.
 5. Draw minimap (top-down arena overview, local player highlighted yellow).
-6. Update HUD via DOM (every 10th frame to throttle reflow).
+6. Update HUD via DOM (every 6th render frame to throttle reflow).
+
+**Sim/render decoupling:** the simulation runs on `setInterval(simTick, 1000/60)`, NOT on `requestAnimationFrame`. Rendering runs on its own `rAF` loop and is purely a consumer of the simulation state. This means a heavy overlay (e.g. the dead overlay used to use `backdrop-filter: blur(8px)` and slash the rAF rate) cannot slow down the simulation or the host's 20 Hz state broadcasts — joiners stay smooth even if the host's render thread is loaded.
+
+The dead overlay is also rendered without `backdrop-filter` and with `pointer-events: none` on its outer wrapper (only the card itself captures clicks), so the game stays visible behind it and clicks pass through to the canvas.
+
+Caveat: when the host's tab is **backgrounded**, browsers throttle *both* `setInterval` and `rAF` to ~1 Hz. The only true fix for that is moving the sim to a Web Worker (workers aren't throttled). Not currently implemented — see §14.
 
 **Orb rendering:**
 - Filled circle in `color` with a 2 px outline in `darkColor`.
@@ -391,7 +418,7 @@ Tested target: latest Chrome / Edge / Firefox on Windows 11. Mobile is not a tar
 - **No anti-cheat.** Joiners trust the host; the host trusts joiner input. Acceptable for friend-group play.
 - **No sound.** Silent by design.
 - **No spectator mode.** Dead players must respawn or leave.
-- **Fixed bot count.** 20 bots regardless of human players.
+- **Fixed bot count.** 30 bots regardless of human players.
 - **No private rooms beyond ID secrecy.** Anyone with your host ID can join; treat the ID like a session password.
 
 ---

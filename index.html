@@ -62,11 +62,14 @@
   .final-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; gap: 12px; font-size: 14px; }
   .final-row.winner { color: #ffd83d; font-weight: 700; }
   .hint { font-size: 12px; color: #6e7ba0; text-align: center; margin-top: 14px; line-height: 1.5; }
+  #visibility-banner { position: fixed; top: 0; left: 0; right: 0; padding: 10px 16px; background: #ff5b5b; color: #fff; text-align: center; font-size: 14px; font-weight: 600; z-index: 200; box-shadow: 0 4px 12px rgba(0,0,0,0.4); display: none; }
+  #visibility-banner.show { display: block; }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
 <canvas id="minimap" width="160" height="160" style="display:none"></canvas>
+<div id="visibility-banner">⚠ This tab is in the background — the browser is throttling it to ~1 fps. Bring this window to the foreground (or open it in a side-by-side window) for smooth multiplayer.</div>
 
 <div id="hud-stats" class="hud" style="display:none">
   <div class="stat-row"><span class="stat-label">Score</span><span class="stat-value" id="stat-score">0</span></div>
@@ -97,7 +100,7 @@
       <button class="btn btn-primary" id="btn-host">Host</button>
       <button class="btn btn-secondary" id="btn-join">Join</button>
     </div>
-    <div class="hint">Mouse to move, or WASD / Arrows. Hosts share their session ID with friends.</div>
+    <div class="hint">Mouse to move, or WASD / Arrows. Hosts share their session ID with friends.<br>For local multi-window testing, open the second client in a <b>separate window</b> (not a tab) and keep both visible — browsers throttle background tabs to ~1 fps.</div>
   </div>
 </div>
 
@@ -225,6 +228,7 @@ let pendingRespawns = new Set();
 let winnerInfo = null;
 let isDeadOverlayActive = false;
 const DEBUG_NET = true; // flip off when stable
+let stateRxCount = 0, stateTxCount = 0, inputTxCount = 0, inputRxCount = 0;
 
 // ============================================================
 // Canvas
@@ -510,6 +514,7 @@ function broadcastState() {
     }))
   };
   broadcast(snap);
+  stateTxCount++;
 }
 function broadcastLobby() {
   broadcast({ type: 'lobby', players: lobby, winScore });
@@ -541,6 +546,7 @@ function onHostReceive(peerId, msg) {
     }
   } else if (msg.type === 'input') {
     joinerInputs.set(peerId, msg);
+    inputRxCount++;
   } else if (msg.type === 'respawn') {
     pendingRespawns.add(peerId);
   }
@@ -571,6 +577,7 @@ function onJoinerReceive(msg) {
   } else if (msg.type === 'state') {
     applySnapshot(msg);
     lastStateAt = performance.now();
+    stateRxCount++;
   } else if (msg.type === 'victory') {
     winnerInfo = msg;
     mode = 'victory';
@@ -720,6 +727,11 @@ function hideDeadOverlay() {
 // Main loop
 // ============================================================
 function tick() {
+  try { tickInner(); } catch (e) { console.error('[tick] error', e); }
+  requestAnimationFrame(tick);
+}
+
+function tickInner() {
   frame++;
 
   // Host: simulate every frame the session is live (don't pause when locally dead).
@@ -747,6 +759,7 @@ function tick() {
     const input = getLocalInput();
     input.type = 'input';
     sendToHost(input);
+    inputTxCount++;
   }
 
   // Local death transition (alive -> dead). Mode does NOT change; sim keeps running.
@@ -771,7 +784,20 @@ function tick() {
 
   render();
   if (frame % 6 === 0) updateHUD();
-  requestAnimationFrame(tick);
+
+  // Heartbeat every ~3 seconds
+  if (DEBUG_NET && frame % 180 === 0 && (role === 'host' || role === 'join')) {
+    const meHb = orbs.find(o => o.id === myOrbId);
+    if (role === 'host') {
+      console.log(`[host hb] mode=${mode} orbs=${orbs.length} conns=${conns.size} stateTx=${stateTxCount} inputRx=${inputRxCount} me=${meHb?`(${meHb.x.toFixed(0)},${meHb.y.toFixed(0)} alive=${meHb.alive} score=${meHb.score})`:'none'}`);
+    } else {
+      const noStateMs = (performance.now() - lastStateAt).toFixed(0);
+      console.log(`[joiner hb] mode=${mode} orbs=${orbs.length} stateRx=${stateRxCount} inputTx=${inputTxCount} lastStateAgo=${noStateMs}ms myOrbId=${myOrbId} me=${meHb?`(${meHb.x.toFixed(0)},${meHb.y.toFixed(0)} alive=${meHb.alive} score=${meHb.score})`:'NOT FOUND'}`);
+      if (mode === 'playing' && stateRxCount === 0 && frame > 180) {
+        console.warn('[joiner] WARNING: no state messages received from host. Connection may be one-way.');
+      }
+    }
+  }
 }
 
 // ============================================================
@@ -1026,11 +1052,13 @@ function startJoin(hostId) {
     setJoinStatus('Connecting to host…');
     const conn = peer.connect(hostId, { reliable: true });
     hostConn = conn;
+    // Register data handler BEFORE open to make sure no message is missed.
+    conn.on('data', onJoinerReceive);
     conn.on('open', () => {
+      if (DEBUG_NET) console.log('[joiner] conn open, sending hello');
       conn.send({ type: 'hello', name: myName, color: myColor });
       setJoinStatus('Connected. Waiting for host to start…');
     });
-    conn.on('data', onJoinerReceive);
     conn.on('close', () => {
       if (mode === 'playing' || mode === 'dead' || mode === 'victory') {
         mode = 'disconnected';
@@ -1047,6 +1075,15 @@ function startJoin(hostId) {
     setJoinStatus('Peer error: ' + (err.message || err.type || 'unknown'));
   });
 }
+
+// ============================================================
+// Page visibility — warn user when tab is backgrounded (browsers throttle hidden tabs to ~1fps)
+// ============================================================
+document.addEventListener('visibilitychange', () => {
+  const hidden = document.hidden;
+  document.getElementById('visibility-banner').classList.toggle('show', hidden);
+  if (DEBUG_NET) console.log(`[visibility] tab is now ${hidden ? 'HIDDEN — will be throttled' : 'visible'}`);
+});
 
 // ============================================================
 // Boot
